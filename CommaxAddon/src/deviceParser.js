@@ -650,10 +650,10 @@ function analyzeAndDiscoverAirQuality(bytes, discoveredSensors, mqttClient, save
     }
 }
 
-function analyzeAndDiscoverMetering(bytes,discoveredMeters,mqttClient,saveState) {
-    if(bytes[0] === 0xF7 && bytes[1] === 0x30 &&  bytes.length === 32) {
+function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, saveState) {
 
-        // log(`<- ${bytes.map(byte => byte.toString(16).padStart(2, '0')).join(' ').toUpperCase()}`);
+    if (bytes[0] !== 0xF7 || bytes[1] !== 0x30 || bytes.length !== 32) return;
+    if (bytes[3] !== 0x81) return;
 
         const water = parseInt(bytes[5].toString(16).padStart(2, '0') + bytes[6].toString(16).padStart(2, '0'),10);
         const accWater = parseInt(bytes[8].toString(16).padStart(2, '0') + bytes[9].toString(16).padStart(2, '0'),10) / 10;
@@ -667,6 +667,9 @@ function analyzeAndDiscoverMetering(bytes,discoveredMeters,mqttClient,saveState)
         const heat = parseInt(bytes[25].toString(16).padStart(2, '0') + bytes[26].toString(16).padStart(2, '0'),10) / 10;
         const accHeat = parseInt(bytes[28].toString(16).padStart(2, '0') + bytes[29].toString(16).padStart(2, '0'),10) / 100;
 
+        const gas      	= parseInt(bytes[10].toString(16).padStart(2, '0') + bytes[11].toString(16).padStart(2, '0'),10);
+        const accGas 	= parseInt(bytes[13].toString(16).padStart(2, '0') + bytes[14].toString(16).padStart(2, '0'),10) / 10;
+
         // log(`실시간 전력 : ${electric} / 실시간 수도 : ${water} / 실시간 온수 : ${warm} / 실시간 난방 : ${heat}`);
         // log(`누적 전력 : ${accElectric} / 누적 수도 : ${accWater} / 누적 온수 : ${accWarm} / 누적 난방 : ${accHeat}`);
 
@@ -676,7 +679,7 @@ function analyzeAndDiscoverMetering(bytes,discoveredMeters,mqttClient,saveState)
             {
                 id: 'water_meter',
                 name: '실시간 수도 사용량',
-                unique_id: 'commax_water_meter',
+                unique_id: 'commax_water_meter_v1',
                 state_topic: `${topicPrefix}/smart_metering/water_meter/state`,
                 availability_topic: `${topicPrefix}/smart_metering/water_meter/availability`,
                 unit_of_measurement: 'm³/h',
@@ -696,7 +699,7 @@ function analyzeAndDiscoverMetering(bytes,discoveredMeters,mqttClient,saveState)
             {
                 id: 'warm_meter',
                 name: '실시간 온수 사용량',
-                unique_id: 'commax_warm_meter',
+                unique_id: 'commax_warm_meter_v1',
                 state_topic: `${topicPrefix}/smart_metering/warm_meter/state`,
                 availability_topic: `${topicPrefix}/smart_metering/warm_meter/availability`,
                 unit_of_measurement: 'm³/h',
@@ -714,12 +717,22 @@ function analyzeAndDiscoverMetering(bytes,discoveredMeters,mqttClient,saveState)
                 precision: 1,
             },
             {
+                id: 'gas_meter',
+                name: '실시간 가스 사용량',
+                unique_id: 'commax_gas_meter',
+                state_topic: `${topicPrefix}/smart_metering/gas_meter/state`,
+                availability_topic: `${topicPrefix}/smart_metering/gas_meter/availability`,
+                unit_of_measurement: 'm³/h',
+                device_class: 'water',
+                precision: 1,
+            },
+            {
                 id: 'water_acc_meter',
                 name: '누적 수도 사용량',
-                unique_id: 'commax_water_acc_meter',
+                unique_id: 'commax_water_acc_meter_v1',
                 state_topic: `${topicPrefix}/smart_metering/water_acc_meter/state`,
                 availability_topic: `${topicPrefix}/smart_metering/water_acc_meter/availability`,
-                unit_of_measurement: 'm³/h',
+                unit_of_measurement: 'm³',
                 device_class: 'water',
                 precision: 1,
             },
@@ -730,7 +743,7 @@ function analyzeAndDiscoverMetering(bytes,discoveredMeters,mqttClient,saveState)
                 state_topic: `${topicPrefix}/smart_metering/electric_acc_meter/state`,
                 availability_topic: `${topicPrefix}/smart_metering/electric_acc_meter/availability`,
                 unit_of_measurement: 'kWh',
-                device_class: 'power',
+                device_class: 'energy',
                 precision: 1,
             },
             {
@@ -750,7 +763,17 @@ function analyzeAndDiscoverMetering(bytes,discoveredMeters,mqttClient,saveState)
                 state_topic: `${topicPrefix}/smart_metering/heat_acc_meter/state`,
                 availability_topic: `${topicPrefix}/smart_metering/heat_acc_meter/availability`,
                 unit_of_measurement: 'm³',
-                device_class: 'power',
+                device_class: 'water',
+                precision: 1,
+            },
+            {
+                id: 'gas_acc_meter',
+                name: '누적 가스 사용량',
+                unique_id: 'commax_gas_acc_meter',
+                state_topic: `${topicPrefix}/smart_metering/gas_acc_meter/state`,
+                availability_topic: `${topicPrefix}/smart_metering/gas_acc_meter/availability`,
+                unit_of_measurement: 'm³',
+                device_class: 'water',
                 precision: 1,
             },
         ];
@@ -795,8 +818,10 @@ function analyzeAndDiscoverMetering(bytes,discoveredMeters,mqttClient,saveState)
         mqttClient.publish(`${topicPrefix}/smart_metering/warm_acc_meter/state`, accWarm.toString(), { retain: true });
         mqttClient.publish(`${topicPrefix}/smart_metering/heat_meter/state`, heat.toString(), { retain: true });
         mqttClient.publish(`${topicPrefix}/smart_metering/heat_acc_meter/state`, accHeat.toString(), { retain: true });
+        mqttClient.publish(`${topicPrefix}/smart_metering/gas_meter/state`, gas.toString(), { retain: true });
+        mqttClient.publish(`${topicPrefix}/smart_metering/gas_acc_meter/state`, accGas.toString(), { retain: true });
     }
-}
+
 
 module.exports = {
     analyzeAndDiscoverOutlet,

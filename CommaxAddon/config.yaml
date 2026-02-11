@@ -1,8 +1,8 @@
 name: "Commax Wallpad"
 description: "코맥스 애드온 TCP Socket Ver"
-version: "1.0.6.2"
+version: "1.0.6.3"
 slug: "commax_wallpad"
-url: "https://github.com/Mystic525/home-assistant"
+url: "https://github.com/xepiloss/home-assistant"
 init: false
 arch:
   - aarch64

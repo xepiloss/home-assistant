@@ -679,7 +679,7 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, saveSta
             {
                 id: 'water_meter',
                 name: '실시간 수도 사용량',
-                unique_id: 'commax_water_meter_v1',
+                unique_id: 'commax_water_meter',
                 state_topic: `${topicPrefix}/smart_metering/water_meter/state`,
                 availability_topic: `${topicPrefix}/smart_metering/water_meter/availability`,
                 unit_of_measurement: 'm³/h',
@@ -699,7 +699,7 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, saveSta
             {
                 id: 'warm_meter',
                 name: '실시간 온수 사용량',
-                unique_id: 'commax_warm_meter_v1',
+                unique_id: 'commax_warm_meter',
                 state_topic: `${topicPrefix}/smart_metering/warm_meter/state`,
                 availability_topic: `${topicPrefix}/smart_metering/warm_meter/availability`,
                 unit_of_measurement: 'm³/h',
@@ -729,7 +729,7 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, saveSta
             {
                 id: 'water_acc_meter',
                 name: '누적 수도 사용량',
-                unique_id: 'commax_water_acc_meter_v1',
+                unique_id: 'commax_water_acc_meter',
                 state_topic: `${topicPrefix}/smart_metering/water_acc_meter/state`,
                 availability_topic: `${topicPrefix}/smart_metering/water_acc_meter/availability`,
                 unit_of_measurement: 'm³',

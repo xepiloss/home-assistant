@@ -1,6 +1,6 @@
 ## RELEASE NOTES
 ```txt
-1.0.6.3 Mystic52님 PR 통합, REPO 주소 및 센서 UNIQUE ID 원복
+1.0.6.3 Mystic525님 PR 통합, REPO 주소 및 센서 UNIQUE ID 원복
 
 1.0.6.2 가스 센서 추가
 

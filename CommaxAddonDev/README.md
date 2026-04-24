@@ -189,7 +189,7 @@ unknown_packet_capture_enabled: true
 unknown_packet_capture_path: "/share/commax_unknown_packets.jsonl"
 ```
 
-수집 파일에는 아직 파서가 없는 프레임과 프레이밍 중 버려진 바이트가 한 줄씩 저장됩니다. 월패드 시간처럼 의미가 확인된 패킷은 센서로 등록되고, 생활정보 응답처럼 의미를 더 분석해야 하는 패킷은 우선 진단용 센서로 확인할 수 있습니다. 분석이 끝나면 저장 파일이 계속 커지지 않도록 `unknown_packet_capture_enabled`를 다시 `false`로 바꾸는 것을 권장합니다.
+수집 파일에는 아직 파서가 없는 프레임, 프레이밍 중 버려진 바이트, 생활정보 `8F` 프레임이 고유 패킷별로 한 줄씩 저장됩니다. 같은 `source`, `kind`, `hex` 조합의 패킷은 새 줄을 만들지 않고 `count`, `first_seen`, `last_seen`, `seen_at` 수신 시각 배열만 갱신합니다. 미세먼지, 날씨, 기온처럼 생활정보 표시값이 바뀌면 `8F` 패킷의 `hex`도 달라질 수 있어 실제 표시값과 수신 시간을 비교해 매핑할 수 있습니다.
 
 ## 주의사항
 

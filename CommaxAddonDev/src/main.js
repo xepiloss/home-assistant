@@ -299,7 +299,14 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 }
                 break;
             case 0x8F:
-                if (!analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
+                if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'life_info_frame',
+                        bytes,
+                        note: 'Life information frame recorded for weather, temperature, and dust mapping.',
+                    });
+                } else {
                     packetCapture.record({
                         source: '메인 EW11',
                         kind: 'invalid_life_info_frame',

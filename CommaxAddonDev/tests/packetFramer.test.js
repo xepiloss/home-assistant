@@ -1,7 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { PacketFramer, formatBytes, resolveMeteringFrameLength } = require('../src/packetFramer');
+const {
+    METERING_PACKET_LENGTHS,
+    PRIMARY_PACKET_LENGTHS,
+    PacketFramer,
+    formatBytes,
+    resolveMeteringFrameLength,
+} = require('../src/packetFramer');
 
 test('PacketFramer emits complete 8-byte frames immediately', () => {
     const framer = new PacketFramer();
@@ -40,7 +46,7 @@ test('PacketFramer preserves long parking frames', () => {
 });
 
 test('PacketFramer extracts a 32-byte metering frame and following 8-byte frame', () => {
-    const framer = new PacketFramer();
+    const framer = new PacketFramer({ packetLengths: METERING_PACKET_LENGTHS });
     const meteringFrame = Buffer.from([
         0xF7, 0x30, 0x0F, 0x81, 0x19, 0x00, 0x00, 0x00,
         0x09, 0x57, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03,
@@ -55,7 +61,7 @@ test('PacketFramer extracts a 32-byte metering frame and following 8-byte frame'
 });
 
 test('PacketFramer preserves variable-length F7 metering traffic', () => {
-    const framer = new PacketFramer();
+    const framer = new PacketFramer({ packetLengths: METERING_PACKET_LENGTHS });
     const pollFrame = Buffer.from([0xF7, 0x30, 0x0F, 0x0F, 0x00, 0xC7, 0x0C]);
     const ackFrame = Buffer.from([0xF7, 0x30, 0x0F, 0x8F, 0x02, 0x00, 0x1F, 0x5A, 0x40]);
     const requestFrame = Buffer.from([0xF7, 0x30, 0x0F, 0x01, 0x00, 0xC9, 0x00]);
@@ -75,6 +81,16 @@ test('PacketFramer preserves variable-length F7 metering traffic', () => {
         [...requestFrame],
         [...stateFrame],
     ]);
+});
+
+test('PacketFramer keeps main EW11 F7 traffic as fixed 8-byte frames', () => {
+    const framer = new PacketFramer({ packetLengths: PRIMARY_PACKET_LENGTHS });
+    const frame = Buffer.from([0xF7, 0x79, 0x01, 0x01, 0x00, 0x00, 0x00, 0x72]);
+
+    const result = framer.push(frame);
+
+    assert.deepEqual(result.dropped, []);
+    assert.deepEqual(result.frames, [[...frame]]);
 });
 
 test('resolveMeteringFrameLength waits for the F7 subtype byte', () => {

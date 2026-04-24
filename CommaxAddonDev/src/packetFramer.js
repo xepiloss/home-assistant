@@ -16,7 +16,7 @@ function resolveMeteringFrameLength(buffer) {
     }
 }
 
-const DEFAULT_PACKET_LENGTHS = new Map([
+const COMMON_PACKET_LENGTHS = [
     [0x78, 8], [0xF8, 8], [0x76, 8], [0xF6, 8],
     [0x31, 8], [0xB1, 8], [0x30, 8], [0xB0, 8],
     [0x22, 8], [0xA2, 8], [0x20, 8], [0xA0, 8],
@@ -29,8 +29,19 @@ const DEFAULT_PACKET_LENGTHS = new Map([
     [0x77, 8], [0x26, 8], [0x0F, 8], [0x8F, 8],
     [0x2A, 48],
     [0x80, 10],
+];
+
+const PRIMARY_PACKET_LENGTHS = new Map([
+    ...COMMON_PACKET_LENGTHS,
+    [0xF7, 8],
+]);
+
+const METERING_PACKET_LENGTHS = new Map([
+    ...COMMON_PACKET_LENGTHS,
     [0xF7, resolveMeteringFrameLength],
 ]);
+
+const DEFAULT_PACKET_LENGTHS = PRIMARY_PACKET_LENGTHS;
 
 const DEFAULT_MAX_BUFFER_BYTES = 256;
 
@@ -118,7 +129,9 @@ function formatBytes(bytes) {
 
 module.exports = {
     DEFAULT_PACKET_LENGTHS,
+    METERING_PACKET_LENGTHS,
     PacketFramer,
+    PRIMARY_PACKET_LENGTHS,
     formatBytes,
     resolveMeteringFrameLength,
 };

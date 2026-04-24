@@ -128,6 +128,7 @@ const PARKING_ICON_DISCOVERY_VERSION = 2;
 const WALLPAD_TIME_DISCOVERY_VERSION = 4;
 const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';
 const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
+const LIFE_INFO_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_temperature';
 
 const MONTHLY_METERING_SENSORS = [
     {
@@ -184,6 +185,7 @@ const MONTHLY_METERING_SOURCE_LABELS = Object.freeze({
     heat_acc_meter: '난방 누적',
     gas_acc_meter: '가스 누적',
 });
+const monthlyUsageLogCache = new WeakMap();
 
 function calculateChecksum(bytes) {
     return bytes.reduce((sum, byte) => sum + byte, 0) & 0xFF;
@@ -983,6 +985,74 @@ function analyzeAndDiscoverLifeInfo(bytes, lifeInfoState, mqttClient, options = 
     return true;
 }
 
+function parseLifeInfoTemperaturePacket(bytes) {
+    if (!bytes || bytes.length !== 8 || bytes[0] !== 0x24 || !hasValidChecksum(bytes)) {
+        return null;
+    }
+
+    if (bytes[1] !== 0x01 || bytes[2] !== 0x01 || bytes[3] !== 0x20 || bytes[6] !== 0x00) {
+        return null;
+    }
+
+    const temperature = decodeBcdByteOrRaw(bytes[5]);
+    if (!Number.isFinite(temperature) || temperature > 60) {
+        return null;
+    }
+
+    return {
+        deviceId: byteToHex(bytes[2]),
+        temperature,
+        unknownCode: byteToHex(bytes[4]).toUpperCase(),
+        raw: formatBytes(bytes),
+    };
+}
+
+function analyzeAndDiscoverLifeInfoTemperature(bytes, lifeInfoState, mqttClient, options = {}) {
+    const parsed = parseLifeInfoTemperaturePacket(bytes);
+    if (!parsed) {
+        return false;
+    }
+
+    const { saveState, topics } = buildContext(options);
+
+    if (!lifeInfoState.lifeInfoTemperatureDiscovered) {
+        const sensorConfig = {
+            name: '생활정보 온도',
+            unique_id: LIFE_INFO_TEMPERATURE_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'temperature', 'state'),
+            json_attributes_topic: topics.path('life_info', 'temperature', 'attributes'),
+            availability_topic: topics.availability('life_info', 'temperature'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            unit_of_measurement: '°C',
+            device_class: 'temperature',
+            state_class: 'measurement',
+            device: cloneDeviceInfo(),
+        };
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_TEMPERATURE_DISCOVERY_ID),
+            sensorConfig,
+            async () => {
+                lifeInfoState.lifeInfoTemperatureDiscovered = true;
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('life_info', 'temperature'), 'available');
+            },
+            'Failed to publish life information temperature discovery:'
+        );
+    }
+
+    publishRetained(mqttClient, topics.path('life_info', 'temperature', 'state'), parsed.temperature);
+    publishRetained(mqttClient, topics.path('life_info', 'temperature', 'attributes'), JSON.stringify({
+        unknown_code: parsed.unknownCode,
+        device_id: parsed.deviceId,
+        raw: parsed.raw,
+    }));
+
+    return true;
+}
+
 function isMeteringPacket(bytes) {
     return bytes
         && bytes.length === 32
@@ -1023,6 +1093,27 @@ function roundMeteringValue(value) {
 
 function getMonthlyMeteringSourceLabel(sourceId) {
     return MONTHLY_METERING_SOURCE_LABELS[sourceId] || sourceId;
+}
+
+function shouldLogMonthlyUsageFormula(monthlyMeteringState, period, sourceId, usage, baseline) {
+    let loggedKeys = monthlyUsageLogCache.get(monthlyMeteringState);
+    if (!loggedKeys) {
+        loggedKeys = new Set();
+        monthlyUsageLogCache.set(monthlyMeteringState, loggedKeys);
+    }
+
+    const key = `${period}:${sourceId}:${usage}:${baseline}`;
+    if (loggedKeys.has(key)) {
+        return false;
+    }
+
+    loggedKeys.add(key);
+    return true;
+}
+
+function logMonthlyUsageFormula(type, period, sourceId, usage, currentValue, baseline) {
+    const calculatedUsage = roundMeteringValue(currentValue - baseline);
+    log(`월간 검침 보정 ${type} (${period}, ${getMonthlyMeteringSourceLabel(sourceId)}): 입력 보정값=${usage}, 현재 누적값=${currentValue}, 월초 누적 기준값=${baseline}, 현재 이번달 사용량=${calculatedUsage}, 계산식=${currentValue} - ${baseline} = ${calculatedUsage}`);
 }
 
 function getConfiguredMonthlyUsageEntries(usageConfig, values, period, appliedUsageConfig) {
@@ -1096,18 +1187,22 @@ function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, 
 
     configuredEntries.entries.forEach(([sourceId, usage]) => {
         if (appliedUsageConfig.values[sourceId] === usage && monthlyMeteringState.baselines[sourceId] !== undefined) {
+            const baseline = monthlyMeteringState.baselines[sourceId];
+            if (shouldLogMonthlyUsageFormula(monthlyMeteringState, period, sourceId, usage, baseline)) {
+                logMonthlyUsageFormula('유지', period, sourceId, usage, values[sourceId], baseline);
+            }
             return;
         }
 
         const baseline = roundMeteringValue(values[sourceId] - usage);
-        const calculatedUsage = roundMeteringValue(values[sourceId] - baseline);
 
         if (monthlyMeteringState.baselines[sourceId] !== baseline) {
             monthlyMeteringState.baselines[sourceId] = baseline;
             changed = true;
         }
 
-        log(`월간 검침 보정 적용 (${period}, ${getMonthlyMeteringSourceLabel(sourceId)}): 입력 이번달 사용량=${usage}, 현재 누적값=${values[sourceId]}, 계산된 월초 누적 기준값=${baseline}, 계산식=${values[sourceId]} - ${baseline} = ${calculatedUsage}`);
+        logMonthlyUsageFormula('적용', period, sourceId, usage, values[sourceId], baseline);
+        shouldLogMonthlyUsageFormula(monthlyMeteringState, period, sourceId, usage, baseline);
 
         appliedUsageConfig.values[sourceId] = usage;
         delete appliedUsageConfig.ignoredValues[sourceId];
@@ -1276,6 +1371,7 @@ module.exports = {
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverElevator,
     analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMasterLight,
     analyzeAndDiscoverMetering,
@@ -1292,6 +1388,7 @@ module.exports = {
     parseMasterLightPacket,
     parseOutletPacket,
     parseLifeInfoPacket,
+    parseLifeInfoTemperaturePacket,
     parseTemperaturePacket,
     parseVentilationPacket,
     parseWallpadTimePacket,

@@ -4,12 +4,14 @@ const CommandHandler = require('./commandHandler');
 const { version: ADDON_VERSION } = require('../package.json');
 const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame } = require('./knownPackets');
 const { createPacketCapture } = require('./packetCapture');
+const { METERING_PACKET_LENGTHS, PRIMARY_PACKET_LENGTHS } = require('./packetFramer');
 const { log, logError } = require('./utils');
 const { loadConfig } = require('./config');
 const { createTopicBuilder } = require('./topics');
 const {
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMasterLight,
     analyzeAndDiscoverMetering,
@@ -101,6 +103,10 @@ function collectPrimaryAvailabilityTopics(state, topics) {
 
     if (state.lifeInfoState?.wallpadTimeDiscovered) {
         availabilityTopics.push(topics.availability('life_info', 'wallpad_time'));
+    }
+
+    if (state.lifeInfoState?.lifeInfoTemperatureDiscovered) {
+        availabilityTopics.push(topics.availability('life_info', 'temperature'));
     }
 
     return availabilityTopics;
@@ -346,6 +352,16 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                     });
                 }
                 break;
+            case 0x24:
+                if (!analyzeAndDiscoverLifeInfoTemperature(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'unhandled_frame',
+                        bytes,
+                        note: 'Framed packet with a known length, but no parser handled it.',
+                    });
+                }
+                break;
             case 0x8F:
                 if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
                     packetCapture.record({
@@ -487,6 +503,7 @@ async function main() {
         }),
         writeCommand: (command) => commandHandler.safeWrite(command, primaryClient?.socket),
         onUnknownPacket: (packet) => packetCapture.record(packet),
+        packetLengths: PRIMARY_PACKET_LENGTHS,
         state,
         mqttClient,
         onAvailable: () => availabilityController.setPrimaryAvailable(),
@@ -510,6 +527,7 @@ async function main() {
             }),
             writeCommand: (command) => commandHandler.safeWrite(command, meteringClient?.socket),
             onUnknownPacket: (packet) => packetCapture.record(packet),
+            packetLengths: METERING_PACKET_LENGTHS,
             state,
             mqttClient,
             onAvailable: () => availabilityController.setMeteringAvailable(),

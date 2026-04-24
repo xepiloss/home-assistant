@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMetering,
     analyzeAndDiscoverWallpadTime,
@@ -13,6 +14,7 @@ const {
     getMonthlyMeteringPeriod,
     isMeteringPacket,
     parseLifeInfoPacket,
+    parseLifeInfoTemperaturePacket,
     parseMasterLightPacket,
     parseTemperaturePacket,
     parseWallpadTimePacket,
@@ -147,6 +149,61 @@ test('parseLifeInfoPacket exposes raw living information bytes without guessing 
         value1: 40,
         value2: 4,
         value3: 46,
+    });
+});
+
+test('parseLifeInfoTemperaturePacket decodes confirmed 0x24 temperature frames', () => {
+    assert.deepEqual(parseLifeInfoTemperaturePacket(bytesFromHex('24 01 01 20 80 09 00 CF')), {
+        deviceId: '01',
+        temperature: 9,
+        unknownCode: '80',
+        raw: '24 01 01 20 80 09 00 CF',
+    });
+
+    assert.deepEqual(parseLifeInfoTemperaturePacket(bytesFromHex('24 01 01 20 85 08 00 D3')), {
+        deviceId: '01',
+        temperature: 8,
+        unknownCode: '85',
+        raw: '24 01 01 20 85 08 00 D3',
+    });
+
+    assert.equal(parseLifeInfoTemperaturePacket(bytesFromHex('24 02 01 00 30 00 00 57')), null);
+});
+
+test('analyzeAndDiscoverLifeInfoTemperature publishes a temperature sensor with raw attributes', async () => {
+    const mqttClient = createMqttStub();
+    const lifeInfoState = {
+        lifeInfoTemperatureDiscovered: false,
+    };
+    let saveCount = 0;
+
+    const handled = analyzeAndDiscoverLifeInfoTemperature(
+        bytesFromHex('24 01 01 20 85 08 00 D3'),
+        lifeInfoState,
+        mqttClient,
+        {
+            saveState: async () => {
+                saveCount += 1;
+            },
+            topics: createTopicBuilder('devcommax'),
+        }
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_temperature/config');
+    const attributesCall = mqttClient.calls.find((call) => call.topic === 'devcommax/life_info/temperature/attributes');
+
+    assert.equal(handled, true);
+    assert.equal(lifeInfoState.lifeInfoTemperatureDiscovered, true);
+    assert.equal(saveCount, 1);
+    assert.equal(discoveryPayload.name, '생활정보 온도');
+    assert.equal(discoveryPayload.device_class, 'temperature');
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/temperature/state' && call.message === '8'));
+    assert.deepEqual(JSON.parse(attributesCall.message), {
+        unknown_code: '85',
+        device_id: '01',
+        raw: '24 01 01 20 85 08 00 D3',
     });
 });
 

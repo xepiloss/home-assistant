@@ -20,6 +20,7 @@ class Ew11Client {
         onAvailable,
         onUnavailable,
         onUnknownPacket,
+        packetLengths,
         usePacketFramer = true,
     }) {
         this.name = name;
@@ -33,7 +34,7 @@ class Ew11Client {
         this.onUnavailable = onUnavailable;
         this.onUnknownPacket = onUnknownPacket || (() => undefined);
         this.usePacketFramer = usePacketFramer;
-        this.packetFramer = usePacketFramer ? new PacketFramer() : null;
+        this.packetFramer = usePacketFramer ? new PacketFramer({ packetLengths }) : null;
         this.logUnknownPackets = shouldLogUnknownPackets();
         this.reconnectDelay = 30000; // 30 seconds
         this.maxRetryAttempts = 10;

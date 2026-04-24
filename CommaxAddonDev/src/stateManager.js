@@ -27,6 +27,7 @@ function createInitialState() {
         lifeInfoState: {
             wallpadTimeDiscovered: false,
             wallpadTimeDiscoveryVersion: 0,
+            lastPublishedWallpadTime: null,
             rawPacketDiscovered: false,
             lastWallpadTime: null,
         },
@@ -62,6 +63,7 @@ function normalizeState(raw = {}) {
         lifeInfoState: {
             wallpadTimeDiscovered: raw.lifeInfoState?.wallpadTimeDiscovered || false,
             wallpadTimeDiscoveryVersion: raw.lifeInfoState?.wallpadTimeDiscoveryVersion || 0,
+            lastPublishedWallpadTime: raw.lifeInfoState?.lastPublishedWallpadTime || null,
             rawPacketDiscovered: raw.lifeInfoState?.rawPacketDiscovered || false,
             lastWallpadTime: raw.lifeInfoState?.lastWallpadTime || null,
         },
@@ -94,6 +96,7 @@ function serializeState(state) {
         lifeInfoState: {
             wallpadTimeDiscovered: state.lifeInfoState.wallpadTimeDiscovered,
             wallpadTimeDiscoveryVersion: state.lifeInfoState.wallpadTimeDiscoveryVersion || 0,
+            lastPublishedWallpadTime: state.lifeInfoState.lastPublishedWallpadTime || null,
             rawPacketDiscovered: state.lifeInfoState.rawPacketDiscovered,
             lastWallpadTime: state.lifeInfoState.lastWallpadTime,
         },

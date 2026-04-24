@@ -1,6 +1,6 @@
 {
   "name": "commax-wallpad-addon",
-  "version": "1.1.5-dev",
+  "version": "1.1.6-dev",
   "description": "Home Assistant addon for Commax wallpad control via EW11 TCP socket",
   "main": "src/main.js",
   "scripts": {

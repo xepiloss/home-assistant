@@ -1,0 +1,10 @@
+node_modules/
+.git/
+.idea/
+.DS_Store
+src/log.txt
+src/devcommax_state.json
+.local-test/
+.env
+.env.*
+!.env.example

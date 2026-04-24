@@ -56,7 +56,26 @@ function parseOptionalNumber(value) {
     }
 
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function parseMonthlyMeteringPeriod(value) {
+    if (value === undefined || value === null || value === '') {
+        return '';
+    }
+
+    const period = String(value).trim();
+    const match = period.match(/^(\d{4})-(\d{2})$/);
+    if (!match) {
+        return '';
+    }
+
+    const month = Number(match[2]);
+    if (month < 1 || month > 12) {
+        return '';
+    }
+
+    return period;
 }
 
 function parseBoolean(value, fallback = false) {
@@ -72,8 +91,16 @@ function parseBoolean(value, fallback = false) {
 }
 
 function normalizeMonthlyMeteringUsageOverrides(raw = {}) {
+    const rawPeriod = raw.monthly_metering_usage_period;
+    const period = parseMonthlyMeteringPeriod(rawPeriod);
+    const hasInvalidPeriod = rawPeriod !== undefined
+        && rawPeriod !== null
+        && String(rawPeriod).trim() !== ''
+        && period === '';
+
     return {
-        period: raw.monthly_metering_usage_period || '',
+        period,
+        invalidPeriod: hasInvalidPeriod ? String(rawPeriod).trim() : '',
         values: {
             water_acc_meter: parseOptionalNumber(raw.monthly_water_usage),
             electric_acc_meter: parseOptionalNumber(raw.monthly_electric_usage),
@@ -152,6 +179,7 @@ module.exports = {
     normalizeConfig,
     normalizeMonthlyMeteringUsageOverrides,
     parseBoolean,
+    parseMonthlyMeteringPeriod,
     parseOptionalNumber,
     readEnvOptions,
 };

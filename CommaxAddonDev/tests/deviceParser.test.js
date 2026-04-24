@@ -337,6 +337,7 @@ test('calculateMonthlyMeteringValues applies configured usage only for the match
         values: {
             electric_acc_meter: 213.8,
         },
+        ignoredValues: {},
     });
     assert.equal(result.values.electric_monthly_meter, 213.8);
 });
@@ -428,6 +429,32 @@ test('applyConfiguredMonthlyUsage ignores stale usage periods', () => {
 
     assert.equal(changed, false);
     assert.equal(monthlyMeteringState.baselines.electric_acc_meter, 8000);
+});
+
+test('applyConfiguredMonthlyUsage ignores usage that is larger than the current cumulative value', () => {
+    const monthlyMeteringState = {
+        period: '2026-04',
+        baselines: {
+            electric_acc_meter: 7100,
+        },
+    };
+
+    const changed = applyConfiguredMonthlyUsage(monthlyMeteringState, {
+        period: '2026-04',
+        values: {
+            electric_acc_meter: 9000,
+        },
+    }, '2026-04', { electric_acc_meter: 7213.8 });
+
+    assert.equal(changed, true);
+    assert.equal(monthlyMeteringState.baselines.electric_acc_meter, 7100);
+    assert.deepEqual(monthlyMeteringState.appliedUsageConfig, {
+        period: '2026-04',
+        values: {},
+        ignoredValues: {
+            electric_acc_meter: 9000,
+        },
+    });
 });
 
 test('analyzeAndDiscoverMetering ignores non-metering frames without publishing', () => {

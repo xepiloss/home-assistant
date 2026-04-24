@@ -279,6 +279,11 @@ function logMonthlyMeteringUsageConfig(monthlyUsageConfig, date = new Date()) {
         .filter(([, value]) => value !== undefined);
     const systemDate = getSystemDateInfo(date);
 
+    if (monthlyUsageConfig?.invalidPeriod) {
+        log(`월간 검침 보정 월 무시: 입력값=${monthlyUsageConfig.invalidPeriod}, 허용 형식=YYYY-MM. 보정값은 적용하지 않고 자동 월초 누적 기준값을 사용합니다.`);
+        return;
+    }
+
     if (!monthlyUsageConfig?.period || configuredValues.length === 0) {
         log(`월간 검침 보정값 미입력: 시작일=${systemDate.dateText}, 시스템 기준 월=${systemDate.period}. 검침 패킷 수신 시 이번 달 첫 누적 검침값을 월초 누적 기준값으로 자동 사용합니다.`);
         return;

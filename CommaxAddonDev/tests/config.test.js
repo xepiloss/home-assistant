@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { normalizeConfig, readEnvOptions } = require('../src/config');
+const { normalizeConfig, parseMonthlyMeteringPeriod, readEnvOptions } = require('../src/config');
 const { createTopicBuilder } = require('../src/topics');
 
 test('normalizeConfig fills defaults and keeps overrides', () => {
@@ -68,6 +68,26 @@ test('normalizeConfig parses optional monthly metering usage overrides', () => {
     assert.equal(config.monthlyMeteringUsageOverrides.values.water_acc_meter, undefined);
     assert.equal(config.monthlyMeteringUsageOverrides.values.electric_acc_meter, 213.8);
     assert.equal(config.monthlyMeteringUsageOverrides.values.gas_acc_meter, 12.3);
+});
+
+test('normalizeConfig ignores invalid monthly metering override inputs', () => {
+    const config = normalizeConfig({
+        monthly_metering_usage_period: 'garbage',
+        monthly_water_usage: '-1',
+        monthly_electric_usage: '213.8',
+    });
+
+    assert.equal(config.monthlyMeteringUsageOverrides.period, '');
+    assert.equal(config.monthlyMeteringUsageOverrides.invalidPeriod, 'garbage');
+    assert.equal(config.monthlyMeteringUsageOverrides.values.water_acc_meter, undefined);
+    assert.equal(config.monthlyMeteringUsageOverrides.values.electric_acc_meter, 213.8);
+});
+
+test('parseMonthlyMeteringPeriod accepts only yyyy-MM calendar months', () => {
+    assert.equal(parseMonthlyMeteringPeriod('2026-04'), '2026-04');
+    assert.equal(parseMonthlyMeteringPeriod('2026-4'), '');
+    assert.equal(parseMonthlyMeteringPeriod('2026-13'), '');
+    assert.equal(parseMonthlyMeteringPeriod('abc'), '');
 });
 
 test('createTopicBuilder joins mqtt and discovery topics consistently', () => {

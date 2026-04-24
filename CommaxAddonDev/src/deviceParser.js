@@ -1021,10 +1021,42 @@ function roundMeteringValue(value) {
     return Math.round(value * 1000) / 1000;
 }
 
-function getConfiguredMonthlyUsageEntries(usageConfig, values) {
-    return Object.entries(usageConfig?.values || {})
-        .filter(([, usage]) => usage !== undefined)
-        .filter(([sourceId]) => values[sourceId] !== undefined);
+function getMonthlyMeteringSourceLabel(sourceId) {
+    return MONTHLY_METERING_SOURCE_LABELS[sourceId] || sourceId;
+}
+
+function getConfiguredMonthlyUsageEntries(usageConfig, values, period, appliedUsageConfig) {
+    const entries = [];
+    let changed = false;
+
+    Object.entries(usageConfig?.values || {}).forEach(([sourceId, usage]) => {
+        const currentValue = values[sourceId];
+        if (usage === undefined || currentValue === undefined) {
+            return;
+        }
+
+        if (!Number.isFinite(usage) || usage < 0) {
+            if (appliedUsageConfig.ignoredValues[sourceId] !== usage) {
+                log(`월간 검침 보정 무시 (${period}, ${getMonthlyMeteringSourceLabel(sourceId)}): 입력 보정값=${usage}. 숫자가 아니거나 음수라 적용하지 않습니다.`);
+                appliedUsageConfig.ignoredValues[sourceId] = usage;
+                changed = true;
+            }
+            return;
+        }
+
+        if (!Number.isFinite(currentValue) || usage > currentValue) {
+            if (appliedUsageConfig.ignoredValues[sourceId] !== usage) {
+                log(`월간 검침 보정 무시 (${period}, ${getMonthlyMeteringSourceLabel(sourceId)}): 입력 보정값=${usage}, 현재 누적값=${currentValue}. 입력 보정값이 현재 누적값보다 커서 월초 누적 기준값을 계산할 수 없습니다.`);
+                appliedUsageConfig.ignoredValues[sourceId] = usage;
+                changed = true;
+            }
+            return;
+        }
+
+        entries.push([sourceId, usage]);
+    });
+
+    return { changed, entries };
 }
 
 function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, values) {
@@ -1032,38 +1064,53 @@ function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, 
         return false;
     }
 
-    const configuredEntries = getConfiguredMonthlyUsageEntries(usageConfig, values);
-    if (configuredEntries.length === 0) {
-        return false;
-    }
-
     let changed = false;
     const appliedUsageConfig = monthlyMeteringState.appliedUsageConfig || {
         period: null,
         values: {},
+        ignoredValues: {},
     };
 
     if (appliedUsageConfig.period !== period) {
         appliedUsageConfig.period = period;
         appliedUsageConfig.values = {};
+        appliedUsageConfig.ignoredValues = {};
         changed = true;
     }
 
-    configuredEntries.forEach(([sourceId, usage]) => {
+    if (!appliedUsageConfig.values) {
+        appliedUsageConfig.values = {};
+    }
+
+    if (!appliedUsageConfig.ignoredValues) {
+        appliedUsageConfig.ignoredValues = {};
+    }
+
+    const configuredEntries = getConfiguredMonthlyUsageEntries(usageConfig, values, period, appliedUsageConfig);
+    changed = configuredEntries.changed || changed;
+
+    if (configuredEntries.entries.length === 0) {
+        monthlyMeteringState.appliedUsageConfig = appliedUsageConfig;
+        return changed;
+    }
+
+    configuredEntries.entries.forEach(([sourceId, usage]) => {
         if (appliedUsageConfig.values[sourceId] === usage && monthlyMeteringState.baselines[sourceId] !== undefined) {
             return;
         }
 
         const baseline = roundMeteringValue(values[sourceId] - usage);
+        const calculatedUsage = roundMeteringValue(values[sourceId] - baseline);
 
         if (monthlyMeteringState.baselines[sourceId] !== baseline) {
             monthlyMeteringState.baselines[sourceId] = baseline;
             changed = true;
         }
 
-        log(`월간 검침 보정 적용 (${period}, ${MONTHLY_METERING_SOURCE_LABELS[sourceId] || sourceId}): 입력 보정값=${usage}, 현재 누적값=${values[sourceId]}, 월초 누적 기준값=${baseline}`);
+        log(`월간 검침 보정 적용 (${period}, ${getMonthlyMeteringSourceLabel(sourceId)}): 입력 이번달 사용량=${usage}, 현재 누적값=${values[sourceId]}, 계산된 월초 누적 기준값=${baseline}, 계산식=${values[sourceId]} - ${baseline} = ${calculatedUsage}`);
 
         appliedUsageConfig.values[sourceId] = usage;
+        delete appliedUsageConfig.ignoredValues[sourceId];
         changed = true;
     });
 
@@ -1109,7 +1156,7 @@ function calculateMonthlyMeteringValues(values, monthlyMeteringState, date = new
             const periodReason = previousPeriod && previousPeriod !== period
                 ? `${dateSource} 월 변경 ${previousPeriod} -> ${period}`
                 : `${dateSource} ${period} 초기 설정`;
-            log(`월간 검침 자동 기준값 설정 (${periodReason}, ${MONTHLY_METERING_SOURCE_LABELS[sensor.sourceId] || sensor.sourceId}): 현재 누적값=${currentValue}, 월초 누적 기준값=${currentValue}`);
+            log(`월간 검침 자동 기준값 설정 (${periodReason}, ${getMonthlyMeteringSourceLabel(sensor.sourceId)}): 현재 누적값=${currentValue}, 월초 누적 기준값=${currentValue}`);
             return;
         }
 

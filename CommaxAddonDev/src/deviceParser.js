@@ -997,15 +997,36 @@ function roundMeteringValue(value) {
     return Math.round(value * 1000) / 1000;
 }
 
+function getConfiguredMonthlyUsageEntries(usageConfig, values) {
+    return Object.entries(usageConfig?.values || {})
+        .filter(([, usage]) => usage !== undefined)
+        .filter(([sourceId]) => values[sourceId] !== undefined);
+}
+
 function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, values) {
     if (!usageConfig || usageConfig.period !== period) {
         return false;
     }
 
-    let changed = false;
+    const configuredEntries = getConfiguredMonthlyUsageEntries(usageConfig, values);
+    if (configuredEntries.length === 0) {
+        return false;
+    }
 
-    Object.entries(usageConfig.values || {}).forEach(([sourceId, usage]) => {
-        if (usage === undefined || values[sourceId] === undefined) {
+    let changed = false;
+    const appliedUsageConfig = monthlyMeteringState.appliedUsageConfig || {
+        period: null,
+        values: {},
+    };
+
+    if (appliedUsageConfig.period !== period) {
+        appliedUsageConfig.period = period;
+        appliedUsageConfig.values = {};
+        changed = true;
+    }
+
+    configuredEntries.forEach(([sourceId, usage]) => {
+        if (appliedUsageConfig.values[sourceId] === usage && monthlyMeteringState.baselines[sourceId] !== undefined) {
             return;
         }
 
@@ -1015,7 +1036,12 @@ function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, 
             monthlyMeteringState.baselines[sourceId] = baseline;
             changed = true;
         }
+
+        appliedUsageConfig.values[sourceId] = usage;
+        changed = true;
     });
+
+    monthlyMeteringState.appliedUsageConfig = appliedUsageConfig;
 
     return changed;
 }
@@ -1031,6 +1057,10 @@ function calculateMonthlyMeteringValues(values, monthlyMeteringState, date = new
     if (monthlyMeteringState.period !== period) {
         monthlyMeteringState.period = period;
         monthlyMeteringState.baselines = {};
+        monthlyMeteringState.appliedUsageConfig = {
+            period: null,
+            values: {},
+        };
         changed = true;
     }
 

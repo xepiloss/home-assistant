@@ -305,7 +305,58 @@ test('calculateMonthlyMeteringValues applies configured usage only for the match
 
     assert.equal(result.changed, true);
     assert.equal(monthlyMeteringState.baselines.electric_acc_meter, 7000);
+    assert.deepEqual(monthlyMeteringState.appliedUsageConfig, {
+        period: '2026-04',
+        values: {
+            electric_acc_meter: 213.8,
+        },
+    });
     assert.equal(result.values.electric_monthly_meter, 213.8);
+});
+
+test('calculateMonthlyMeteringValues does not reapply configured usage after it was applied', () => {
+    const monthlyMeteringState = {
+        period: '2026-04',
+        baselines: {
+            electric_acc_meter: 7100,
+        },
+    };
+    const usageConfig = {
+        period: '2026-04',
+        values: {
+            electric_acc_meter: 213.8,
+        },
+    };
+
+    const firstResult = calculateMonthlyMeteringValues(
+        {
+            water_acc_meter: 100,
+            electric_acc_meter: 7213.8,
+            warm_acc_meter: 200,
+            heat_acc_meter: 10,
+            gas_acc_meter: 50,
+        },
+        monthlyMeteringState,
+        new Date(2026, 3, 25),
+        usageConfig
+    );
+    const secondResult = calculateMonthlyMeteringValues(
+        {
+            water_acc_meter: 100,
+            electric_acc_meter: 7214.8,
+            warm_acc_meter: 200,
+            heat_acc_meter: 10,
+            gas_acc_meter: 50,
+        },
+        monthlyMeteringState,
+        new Date(2026, 3, 25),
+        usageConfig
+    );
+
+    assert.equal(firstResult.values.electric_monthly_meter, 213.8);
+    assert.equal(secondResult.changed, false);
+    assert.equal(monthlyMeteringState.baselines.electric_acc_meter, 7000);
+    assert.equal(secondResult.values.electric_monthly_meter, 214.8);
 });
 
 test('calculateMonthlyMeteringValues can use the wallpad clock period', () => {

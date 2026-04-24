@@ -32,6 +32,10 @@ function createInitialState() {
         monthlyMeteringState: {
             period: null,
             baselines: {},
+            appliedUsageConfig: {
+                period: null,
+                values: {},
+            },
         },
         parkingState: {
             parkingDiscovered: false,
@@ -62,6 +66,10 @@ function normalizeState(raw = {}) {
         monthlyMeteringState: {
             period: raw.monthlyMeteringState?.period || null,
             baselines: raw.monthlyMeteringState?.baselines || {},
+            appliedUsageConfig: {
+                period: raw.monthlyMeteringState?.appliedUsageConfig?.period || null,
+                values: raw.monthlyMeteringState?.appliedUsageConfig?.values || {},
+            },
         },
         parkingState: {
             parkingDiscovered: raw.parkingState?.parkingDiscovered || false,
@@ -89,6 +97,10 @@ function serializeState(state) {
         monthlyMeteringState: {
             period: state.monthlyMeteringState.period,
             baselines: state.monthlyMeteringState.baselines,
+            appliedUsageConfig: state.monthlyMeteringState.appliedUsageConfig || {
+                period: null,
+                values: {},
+            },
         },
         parkingState: {
             parkingDiscovered: state.parkingState.parkingDiscovered,

@@ -1,9 +1,0 @@
-node_modules/
-.DS_Store
-.idea/
-src/log.txt
-src/devcommax_state.json
-.local-test/
-.env
-.env.*
-!.env.example

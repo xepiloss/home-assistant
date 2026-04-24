@@ -95,10 +95,6 @@ function collectPrimaryAvailabilityTopics(state, topics) {
         availabilityTopics.push(topics.availability('life_info', 'wallpad_time'));
     }
 
-    if (state.lifeInfoState?.rawPacketDiscovered) {
-        availabilityTopics.push(topics.availability('life_info', 'raw_packet'));
-    }
-
     return availabilityTopics;
 }
 

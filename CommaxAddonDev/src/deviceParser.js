@@ -258,6 +258,19 @@ function publishDiscovery(mqttClient, topic, payload, onSuccess, errorMessage) {
     });
 }
 
+function deleteDiscovery(mqttClient, topic, onSuccess, errorMessage) {
+    mqttClient.publish(topic, '', { retain: true }, async (err) => {
+        if (err) {
+            logError(errorMessage, err);
+            return;
+        }
+
+        if (onSuccess) {
+            await onSuccess();
+        }
+    });
+}
+
 function parseOutletPacket(bytes) {
     if (bytes.length !== 8 || ![0xF9, 0xFA].includes(bytes[0])) {
         return null;
@@ -866,6 +879,7 @@ function parseWallpadTimePacket(bytes) {
     }
 
     wallpadTime.period = `${wallpadTime.year}-${pad2(month)}`;
+    wallpadTime.display = `${wallpadTime.period}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}:${pad2(second)}`;
     wallpadTime.iso = `${wallpadTime.period}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:${pad2(second)}+09:00`;
 
     return wallpadTime;
@@ -889,7 +903,6 @@ function analyzeAndDiscoverWallpadTime(bytes, lifeInfoState, mqttClient, options
             availability_topic: topics.availability('life_info', 'wallpad_time'),
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            device_class: 'timestamp',
             icon: 'mdi:clock-time-four-outline',
             device: cloneDeviceInfo(),
         };
@@ -907,7 +920,7 @@ function analyzeAndDiscoverWallpadTime(bytes, lifeInfoState, mqttClient, options
         );
     }
 
-    publishRetained(mqttClient, topics.path('life_info', 'wallpad_time', 'state'), parsed.iso);
+    publishRetained(mqttClient, topics.path('life_info', 'wallpad_time', 'state'), parsed.display);
 
     return true;
 }
@@ -929,49 +942,27 @@ function parseLifeInfoPacket(bytes) {
 }
 
 function analyzeAndDiscoverLifeInfo(bytes, lifeInfoState, mqttClient, options = {}) {
-    const parsed = parseLifeInfoPacket(bytes);
-    if (!parsed) {
+    if (!parseLifeInfoPacket(bytes)) {
         return false;
     }
 
     const { saveState, topics } = buildContext(options);
 
-    if (!lifeInfoState.rawPacketDiscovered) {
-        const sensorConfig = {
-            name: '생활정보 패킷',
-            unique_id: LIFE_INFO_RAW_DISCOVERY_ID,
-            state_topic: topics.path('life_info', 'raw_packet', 'state'),
-            json_attributes_topic: topics.path('life_info', 'raw_packet', 'attributes'),
-            availability_topic: topics.availability('life_info', 'raw_packet'),
-            payload_available: 'available',
-            payload_not_available: 'unavailable',
-            icon: 'mdi:information-outline',
-            entity_category: 'diagnostic',
-            device: cloneDeviceInfo(),
-        };
-
-        publishDiscovery(
+    if (!lifeInfoState.rawPacketDiscoveryDeleteSent) {
+        deleteDiscovery(
             mqttClient,
             topics.discovery('sensor', LIFE_INFO_RAW_DISCOVERY_ID),
-            sensorConfig,
             async () => {
-                lifeInfoState.rawPacketDiscovered = true;
-                await saveState();
-                publishAvailability(mqttClient, topics.availability('life_info', 'raw_packet'), 'available');
+                lifeInfoState.rawPacketDiscoveryDeleteSent = true;
+
+                if (lifeInfoState.rawPacketDiscovered) {
+                    lifeInfoState.rawPacketDiscovered = false;
+                    await saveState();
+                }
             },
-            'Failed to publish life information packet discovery:'
+            'Failed to delete life information packet discovery:'
         );
     }
-
-    publishRetained(mqttClient, topics.path('life_info', 'raw_packet', 'state'), parsed.raw);
-    publishRetained(mqttClient, topics.path('life_info', 'raw_packet', 'attributes'), JSON.stringify({
-        temperature_code: parsed.temperatureCode,
-        weather_code: parsed.weatherCode,
-        dust_code: parsed.dustCode,
-        value_1: parsed.value1,
-        value_2: parsed.value2,
-        value_3: parsed.value3,
-    }));
 
     return true;
 }

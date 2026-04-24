@@ -74,11 +74,12 @@ test('parseWallpadTimePacket decodes BCD wallpad date and time', () => {
         minute: 19,
         second: 59,
         period: '2026-04',
+        display: '2026-04-25 02:19:59',
         iso: '2026-04-25T02:19:59+09:00',
     });
 });
 
-test('analyzeAndDiscoverWallpadTime publishes timestamp and stores it for monthly metering', async () => {
+test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for monthly metering', async () => {
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         wallpadTimeDiscovered: false,
@@ -102,8 +103,10 @@ test('analyzeAndDiscoverWallpadTime publishes timestamp and stores it for monthl
     assert.equal(handled, true);
     assert.equal(lifeInfoState.lastWallpadTime.period, '2026-04');
     assert.equal(saveCount, 1);
-    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_wallpad_time/config'));
-    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '2026-04-25T02:19:59+09:00'));
+    const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_wallpad_time/config');
+
+    assert.equal(discoveryPayload.device_class, undefined);
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '2026-04-25 02:19:59'));
 });
 
 test('parseLifeInfoPacket exposes raw living information bytes without guessing labels', () => {
@@ -120,37 +123,34 @@ test('parseLifeInfoPacket exposes raw living information bytes without guessing 
     });
 });
 
-test('analyzeAndDiscoverLifeInfo publishes the raw packet as a diagnostic sensor', async () => {
+test('analyzeAndDiscoverLifeInfo removes old raw packet discovery and leaves capture to the packet logger', async () => {
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         wallpadTimeDiscovered: false,
-        rawPacketDiscovered: false,
+        rawPacketDiscovered: true,
         lastWallpadTime: null,
     };
+    let saveCount = 0;
 
     const handled = analyzeAndDiscoverLifeInfo(
         bytesFromHex('8F 0A 03 05 40 04 46 2B'),
         lifeInfoState,
         mqttClient,
         {
+            saveState: async () => {
+                saveCount += 1;
+            },
             topics: createTopicBuilder('devcommax'),
         }
     );
 
-    const attrs = mqttClient.calls.find((call) => call.topic === 'devcommax/life_info/raw_packet/attributes');
+    const deleteCall = mqttClient.calls.find((call) => call.topic === 'homeassistant/sensor/commax_life_info_raw/config');
 
     assert.equal(handled, true);
-    assert(lifeInfoState.rawPacketDiscovered);
-    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_life_info_raw/config'));
-    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/raw_packet/state' && call.message === '8F 0A 03 05 40 04 46 2B'));
-    assert.deepEqual(JSON.parse(attrs.message), {
-        temperature_code: 10,
-        weather_code: 3,
-        dust_code: 5,
-        value_1: 40,
-        value_2: 4,
-        value_3: 46,
-    });
+    assert.equal(lifeInfoState.rawPacketDiscovered, false);
+    assert.equal(saveCount, 1);
+    assert.equal(deleteCall.message, '');
+    assert.equal(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/raw_packet/state'), false);
 });
 
 test('analyzeAndDiscoverLight publishes discovery and state topics once', async () => {

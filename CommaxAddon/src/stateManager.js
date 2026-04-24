@@ -24,9 +24,21 @@ function createInitialState() {
         discoveredMasterLights: new Set(),
         discoveredSensors: new Set(),
         discoveredMeters: new Set(),
+        lifeInfoState: {
+            wallpadTimeDiscovered: false,
+            wallpadTimeDiscoveryVersion: 0,
+            lastPublishedWallpadTime: null,
+            lifeInfoTemperatureDiscovered: false,
+            rawPacketDiscovered: false,
+            lastWallpadTime: null,
+        },
         monthlyMeteringState: {
             period: null,
             baselines: {},
+            appliedUsageConfig: {
+                period: null,
+                values: {},
+            },
         },
         parkingState: {
             parkingDiscovered: false,
@@ -49,9 +61,21 @@ function normalizeState(raw = {}) {
         discoveredMasterLights: new Set(raw.discoveredMasterLights || []),
         discoveredSensors: new Set(raw.discoveredSensors || []),
         discoveredMeters: new Set(raw.discoveredMeters || []),
+        lifeInfoState: {
+            wallpadTimeDiscovered: raw.lifeInfoState?.wallpadTimeDiscovered || false,
+            wallpadTimeDiscoveryVersion: raw.lifeInfoState?.wallpadTimeDiscoveryVersion || 0,
+            lastPublishedWallpadTime: raw.lifeInfoState?.lastPublishedWallpadTime || null,
+            lifeInfoTemperatureDiscovered: raw.lifeInfoState?.lifeInfoTemperatureDiscovered || false,
+            rawPacketDiscovered: raw.lifeInfoState?.rawPacketDiscovered || false,
+            lastWallpadTime: raw.lifeInfoState?.lastWallpadTime || null,
+        },
         monthlyMeteringState: {
             period: raw.monthlyMeteringState?.period || null,
             baselines: raw.monthlyMeteringState?.baselines || {},
+            appliedUsageConfig: {
+                period: raw.monthlyMeteringState?.appliedUsageConfig?.period || null,
+                values: raw.monthlyMeteringState?.appliedUsageConfig?.values || {},
+            },
         },
         parkingState: {
             parkingDiscovered: raw.parkingState?.parkingDiscovered || false,
@@ -71,9 +95,21 @@ function serializeState(state) {
         discoveredMasterLights: Array.from(state.discoveredMasterLights),
         discoveredSensors: Array.from(state.discoveredSensors),
         discoveredMeters: Array.from(state.discoveredMeters),
+        lifeInfoState: {
+            wallpadTimeDiscovered: state.lifeInfoState.wallpadTimeDiscovered,
+            wallpadTimeDiscoveryVersion: state.lifeInfoState.wallpadTimeDiscoveryVersion || 0,
+            lastPublishedWallpadTime: state.lifeInfoState.lastPublishedWallpadTime || null,
+            lifeInfoTemperatureDiscovered: state.lifeInfoState.lifeInfoTemperatureDiscovered || false,
+            rawPacketDiscovered: state.lifeInfoState.rawPacketDiscovered,
+            lastWallpadTime: state.lifeInfoState.lastWallpadTime,
+        },
         monthlyMeteringState: {
             period: state.monthlyMeteringState.period,
             baselines: state.monthlyMeteringState.baselines,
+            appliedUsageConfig: state.monthlyMeteringState.appliedUsageConfig || {
+                period: null,
+                values: {},
+            },
         },
         parkingState: {
             parkingDiscovered: state.parkingState.parkingDiscovered,

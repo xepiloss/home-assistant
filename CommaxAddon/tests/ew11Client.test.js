@@ -27,3 +27,29 @@ test('handleIncomingData bypasses packet framing when disabled', () => {
 
     assert.deepEqual(received, [[...rawFrame]]);
 });
+
+test('handleIncomingData reports dropped bytes to unknown packet capture', () => {
+    const captured = [];
+    const client = {
+        usePacketFramer: true,
+        packetFramer: {
+            push() {
+                return {
+                    frames: [[0xB1, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0xB3]],
+                    dropped: [[0x57, 0x00, 0x00]],
+                };
+            },
+        },
+        logUnknownPackets: false,
+        name: '메인 EW11',
+        onDataCallback() {},
+        onUnknownPacket: (packet) => captured.push(packet),
+    };
+
+    Ew11Client.prototype.handleIncomingData.call(client, Buffer.from([0x57, 0x00, 0x00]));
+
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].source, '메인 EW11');
+    assert.equal(captured[0].kind, 'dropped_bytes');
+    assert.deepEqual(captured[0].bytes, [0x57, 0x00, 0x00]);
+});

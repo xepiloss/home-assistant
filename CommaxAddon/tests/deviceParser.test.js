@@ -3,15 +3,21 @@ const assert = require('node:assert/strict');
 
 const {
     analyzeAndDiscoverAirQuality,
+    analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMetering,
+    analyzeAndDiscoverWallpadTime,
     applyConfiguredMonthlyUsage,
     calculateChecksum,
     calculateMonthlyMeteringValues,
     getMonthlyMeteringPeriod,
     isMeteringPacket,
+    parseLifeInfoPacket,
+    parseLifeInfoTemperaturePacket,
     parseMasterLightPacket,
     parseTemperaturePacket,
+    parseWallpadTimePacket,
 } = require('../src/deviceParser');
 const { createTopicBuilder } = require('../src/topics');
 
@@ -57,6 +63,178 @@ test('parseMasterLightPacket ignores elevator packets sharing the same header', 
     bytes.push(calculateChecksum(bytes));
 
     assert.equal(parseMasterLightPacket(bytes), null);
+});
+
+test('parseWallpadTimePacket decodes BCD wallpad date and time', () => {
+    const parsed = parseWallpadTimePacket(bytesFromHex('7F 26 04 25 02 19 59 42'));
+
+    assert.deepEqual(parsed, {
+        year: 2026,
+        month: 4,
+        day: 25,
+        hour: 2,
+        minute: 19,
+        second: 59,
+        period: '2026-04',
+        display: '2026-04-25 02:19',
+        iso: '2026-04-25T02:19:59+09:00',
+    });
+});
+
+test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for monthly metering', async () => {
+    const mqttClient = createMqttStub();
+    const lifeInfoState = {
+        wallpadTimeDiscovered: true,
+        wallpadTimeDiscoveryVersion: 3,
+        rawPacketDiscovered: false,
+        lastWallpadTime: null,
+    };
+    let saveCount = 0;
+
+    const handled = analyzeAndDiscoverWallpadTime(
+        bytesFromHex('7F 26 04 25 02 19 59 42'),
+        lifeInfoState,
+        mqttClient,
+        {
+            saveState: async () => {
+                saveCount += 1;
+            },
+            topics: createTopicBuilder('devcommax'),
+        }
+    );
+
+    assert.equal(handled, true);
+    assert.equal(lifeInfoState.lastWallpadTime.period, '2026-04');
+    assert.equal(saveCount, 1);
+    assert.equal(lifeInfoState.wallpadTimeDiscoveryVersion, 4);
+    const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_wallpad_time/config');
+
+    assert.equal(discoveryPayload.device_class, undefined);
+    assert.equal(discoveryPayload.entity_category, 'diagnostic');
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '2026-04-25 02:19'));
+});
+
+test('analyzeAndDiscoverWallpadTime publishes state only when the displayed minute changes', async () => {
+    const mqttClient = createMqttStub();
+    const lifeInfoState = {
+        wallpadTimeDiscovered: true,
+        wallpadTimeDiscoveryVersion: 4,
+        rawPacketDiscovered: false,
+        lastWallpadTime: null,
+    };
+    const options = {
+        topics: createTopicBuilder('devcommax'),
+    };
+
+    analyzeAndDiscoverWallpadTime(bytesFromHex('7F 26 04 25 02 19 00 E9'), lifeInfoState, mqttClient, options);
+    analyzeAndDiscoverWallpadTime(bytesFromHex('7F 26 04 25 02 19 59 42'), lifeInfoState, mqttClient, options);
+    analyzeAndDiscoverWallpadTime(bytesFromHex('7F 26 04 25 02 20 00 F0'), lifeInfoState, mqttClient, options);
+
+    const statePublishes = mqttClient.calls.filter((call) => call.topic === 'devcommax/life_info/wallpad_time/state');
+
+    assert.deepEqual(statePublishes.map((call) => call.message), [
+        '2026-04-25 02:19',
+        '2026-04-25 02:20',
+    ]);
+});
+
+test('parseLifeInfoPacket exposes raw living information bytes without guessing labels', () => {
+    const parsed = parseLifeInfoPacket(bytesFromHex('8F 0A 03 05 40 04 46 2B'));
+
+    assert.deepEqual(parsed, {
+        raw: '8F 0A 03 05 40 04 46 2B',
+        temperatureCode: 10,
+        weatherCode: 3,
+        dustCode: 5,
+        value1: 40,
+        value2: 4,
+        value3: 46,
+    });
+});
+
+test('parseLifeInfoTemperaturePacket decodes confirmed 0x24 temperature frames', () => {
+    assert.deepEqual(parseLifeInfoTemperaturePacket(bytesFromHex('24 01 01 20 80 09 00 CF')), {
+        deviceId: '01',
+        temperature: 9,
+        unknownCode: '80',
+        raw: '24 01 01 20 80 09 00 CF',
+    });
+
+    assert.deepEqual(parseLifeInfoTemperaturePacket(bytesFromHex('24 01 01 20 85 08 00 D3')), {
+        deviceId: '01',
+        temperature: 8,
+        unknownCode: '85',
+        raw: '24 01 01 20 85 08 00 D3',
+    });
+
+    assert.equal(parseLifeInfoTemperaturePacket(bytesFromHex('24 02 01 00 30 00 00 57')), null);
+});
+
+test('analyzeAndDiscoverLifeInfoTemperature publishes a temperature sensor with raw attributes', async () => {
+    const mqttClient = createMqttStub();
+    const lifeInfoState = {
+        lifeInfoTemperatureDiscovered: false,
+    };
+    let saveCount = 0;
+
+    const handled = analyzeAndDiscoverLifeInfoTemperature(
+        bytesFromHex('24 01 01 20 85 08 00 D3'),
+        lifeInfoState,
+        mqttClient,
+        {
+            saveState: async () => {
+                saveCount += 1;
+            },
+            topics: createTopicBuilder('devcommax'),
+        }
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_temperature/config');
+    const attributesCall = mqttClient.calls.find((call) => call.topic === 'devcommax/life_info/temperature/attributes');
+
+    assert.equal(handled, true);
+    assert.equal(lifeInfoState.lifeInfoTemperatureDiscovered, true);
+    assert.equal(saveCount, 1);
+    assert.equal(discoveryPayload.name, '생활정보 온도');
+    assert.equal(discoveryPayload.device_class, 'temperature');
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/temperature/state' && call.message === '8'));
+    assert.deepEqual(JSON.parse(attributesCall.message), {
+        unknown_code: '85',
+        device_id: '01',
+        raw: '24 01 01 20 85 08 00 D3',
+    });
+});
+
+test('analyzeAndDiscoverLifeInfo removes old raw packet discovery and leaves capture to the packet logger', async () => {
+    const mqttClient = createMqttStub();
+    const lifeInfoState = {
+        wallpadTimeDiscovered: false,
+        rawPacketDiscovered: true,
+        lastWallpadTime: null,
+    };
+    let saveCount = 0;
+
+    const handled = analyzeAndDiscoverLifeInfo(
+        bytesFromHex('8F 0A 03 05 40 04 46 2B'),
+        lifeInfoState,
+        mqttClient,
+        {
+            saveState: async () => {
+                saveCount += 1;
+            },
+            topics: createTopicBuilder('devcommax'),
+        }
+    );
+
+    const deleteCall = mqttClient.calls.find((call) => call.topic === 'homeassistant/sensor/commax_life_info_raw/config');
+
+    assert.equal(handled, true);
+    assert.equal(lifeInfoState.rawPacketDiscovered, false);
+    assert.equal(saveCount, 1);
+    assert.equal(deleteCall.message, '');
+    assert.equal(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/raw_packet/state'), false);
 });
 
 test('analyzeAndDiscoverLight publishes discovery and state topics once', async () => {
@@ -211,7 +389,84 @@ test('calculateMonthlyMeteringValues applies configured usage only for the match
 
     assert.equal(result.changed, true);
     assert.equal(monthlyMeteringState.baselines.electric_acc_meter, 7000);
+    assert.deepEqual(monthlyMeteringState.appliedUsageConfig, {
+        period: '2026-04',
+        values: {
+            electric_acc_meter: 213.8,
+        },
+        ignoredValues: {},
+    });
     assert.equal(result.values.electric_monthly_meter, 213.8);
+});
+
+test('calculateMonthlyMeteringValues does not reapply configured usage after it was applied', () => {
+    const monthlyMeteringState = {
+        period: '2026-04',
+        baselines: {
+            electric_acc_meter: 7100,
+        },
+    };
+    const usageConfig = {
+        period: '2026-04',
+        values: {
+            electric_acc_meter: 213.8,
+        },
+    };
+
+    const firstResult = calculateMonthlyMeteringValues(
+        {
+            water_acc_meter: 100,
+            electric_acc_meter: 7213.8,
+            warm_acc_meter: 200,
+            heat_acc_meter: 10,
+            gas_acc_meter: 50,
+        },
+        monthlyMeteringState,
+        new Date(2026, 3, 25),
+        usageConfig
+    );
+    const secondResult = calculateMonthlyMeteringValues(
+        {
+            water_acc_meter: 100,
+            electric_acc_meter: 7214.8,
+            warm_acc_meter: 200,
+            heat_acc_meter: 10,
+            gas_acc_meter: 50,
+        },
+        monthlyMeteringState,
+        new Date(2026, 3, 25),
+        usageConfig
+    );
+
+    assert.equal(firstResult.values.electric_monthly_meter, 213.8);
+    assert.equal(secondResult.changed, false);
+    assert.equal(monthlyMeteringState.baselines.electric_acc_meter, 7000);
+    assert.equal(secondResult.values.electric_monthly_meter, 214.8);
+});
+
+test('calculateMonthlyMeteringValues can use the wallpad clock period', () => {
+    const monthlyMeteringState = {
+        period: '2026-03',
+        baselines: {
+            electric_acc_meter: 7000,
+        },
+    };
+    const values = {
+        water_acc_meter: 100,
+        electric_acc_meter: 7213.8,
+        warm_acc_meter: 200,
+        heat_acc_meter: 10,
+        gas_acc_meter: 50,
+    };
+
+    const result = calculateMonthlyMeteringValues(values, monthlyMeteringState, {
+        year: 2026,
+        month: 4,
+    });
+
+    assert.equal(getMonthlyMeteringPeriod({ year: 2026, month: 4 }), '2026-04');
+    assert.equal(result.changed, true);
+    assert.equal(monthlyMeteringState.period, '2026-04');
 });
 
 test('applyConfiguredMonthlyUsage ignores stale usage periods', () => {
@@ -231,6 +486,32 @@ test('applyConfiguredMonthlyUsage ignores stale usage periods', () => {
 
     assert.equal(changed, false);
     assert.equal(monthlyMeteringState.baselines.electric_acc_meter, 8000);
+});
+
+test('applyConfiguredMonthlyUsage ignores usage that is larger than the current cumulative value', () => {
+    const monthlyMeteringState = {
+        period: '2026-04',
+        baselines: {
+            electric_acc_meter: 7100,
+        },
+    };
+
+    const changed = applyConfiguredMonthlyUsage(monthlyMeteringState, {
+        period: '2026-04',
+        values: {
+            electric_acc_meter: 9000,
+        },
+    }, '2026-04', { electric_acc_meter: 7213.8 });
+
+    assert.equal(changed, true);
+    assert.equal(monthlyMeteringState.baselines.electric_acc_meter, 7100);
+    assert.deepEqual(monthlyMeteringState.appliedUsageConfig, {
+        period: '2026-04',
+        values: {},
+        ignoredValues: {
+            electric_acc_meter: 9000,
+        },
+    });
 });
 
 test('analyzeAndDiscoverMetering ignores non-metering frames without publishing', () => {

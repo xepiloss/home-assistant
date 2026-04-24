@@ -1,17 +1,24 @@
 const MqttClient = require('./mqttClient');
 const Ew11Client = require('./ew11Client');
 const CommandHandler = require('./commandHandler');
+const { version: ADDON_VERSION } = require('../package.json');
+const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame } = require('./knownPackets');
+const { createPacketCapture } = require('./packetCapture');
+const { METERING_PACKET_LENGTHS, PRIMARY_PACKET_LENGTHS } = require('./packetFramer');
 const { log, logError } = require('./utils');
 const { loadConfig } = require('./config');
 const { createTopicBuilder } = require('./topics');
 const {
     analyzeAndDiscoverAirQuality,
+    analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMasterLight,
     analyzeAndDiscoverMetering,
     analyzeAndDiscoverOutlet,
     analyzeAndDiscoverTemperature,
     analyzeAndDiscoverVentilation,
+    analyzeAndDiscoverWallpadTime,
     analyzeParkingAreaAndCarNumber,
 } = require('./deviceParser');
 const { loadState, saveState } = require('./stateManager');
@@ -19,6 +26,13 @@ const { loadState, saveState } = require('./stateManager');
 const INTERVAL_WINDOW_MS = 10 * 1000;
 const THRESHOLD_INTERVAL_MS = 100;
 const COMMAND_DRAIN_INTERVAL_MS = 50;
+const MONTHLY_USAGE_LABELS = Object.freeze({
+    water_acc_meter: '수도',
+    electric_acc_meter: '전기',
+    warm_acc_meter: '온수',
+    heat_acc_meter: '난방',
+    gas_acc_meter: '가스',
+});
 
 function publishAsync(mqttClient, topic, message, options) {
     return new Promise((resolve, reject) => {
@@ -85,6 +99,14 @@ function collectPrimaryAvailabilityTopics(state, topics) {
             topics.availability('air_quality', 'pm2_5'),
             topics.availability('air_quality', 'pm10')
         );
+    }
+
+    if (state.lifeInfoState?.wallpadTimeDiscovered) {
+        availabilityTopics.push(topics.availability('life_info', 'wallpad_time'));
+    }
+
+    if (state.lifeInfoState?.lifeInfoTemperatureDiscovered) {
+        availabilityTopics.push(topics.availability('life_info', 'temperature'));
     }
 
     return availabilityTopics;
@@ -239,7 +261,51 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
     };
 }
 
-function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, getSocket }) {
+function formatMonthlyUsageValue(sourceId, value) {
+    return `${MONTHLY_USAGE_LABELS[sourceId] || sourceId}=${value}`;
+}
+
+function pad2(value) {
+    return String(value).padStart(2, '0');
+}
+
+function getSystemDateInfo(date = new Date()) {
+    const year = date.getFullYear();
+    const month = pad2(date.getMonth() + 1);
+    const day = pad2(date.getDate());
+
+    return {
+        dateText: `${year}-${month}-${day}`,
+        period: `${year}-${month}`,
+    };
+}
+
+function logMonthlyMeteringUsageConfig(monthlyUsageConfig, date = new Date()) {
+    const configuredValues = Object.entries(monthlyUsageConfig?.values || {})
+        .filter(([, value]) => value !== undefined);
+    const systemDate = getSystemDateInfo(date);
+
+    if (monthlyUsageConfig?.invalidPeriod) {
+        log(`월간 검침 보정 월 무시: 입력값=${monthlyUsageConfig.invalidPeriod}, 허용 형식=YYYY-MM. 보정값은 적용하지 않고 자동 월초 누적 기준값을 사용합니다.`);
+        return;
+    }
+
+    if (!monthlyUsageConfig?.period || configuredValues.length === 0) {
+        log(`월간 검침 보정값 미입력: 시작일=${systemDate.dateText}, 시스템 기준 월=${systemDate.period}. 검침 패킷 수신 시 이번 달 첫 누적 검침값을 월초 누적 기준값으로 자동 사용합니다.`);
+        return;
+    }
+
+    const valuesText = configuredValues
+        .map(([sourceId, value]) => formatMonthlyUsageValue(sourceId, value))
+        .join(', ');
+    const usagePlan = monthlyUsageConfig.period === systemDate.period
+        ? '현재 시스템 기준 월과 일치하므로 검침 패킷 수신 시 보정값을 적용합니다. 월패드 시간이 수신되면 월패드 기준 월로 다시 판단합니다.'
+        : '현재 시스템 기준 월과 달라 우선 자동 기준값을 사용합니다. 월패드/시스템 기준 월이 보정 월과 일치할 때만 보정값을 적용합니다.';
+
+    log(`월간 검침 보정값 입력 확인: 시작일=${systemDate.dateText}, 시스템 기준 월=${systemDate.period}, 보정 월=${monthlyUsageConfig.period}, 입력값=${valuesText}. ${usagePlan}`);
+}
+
+function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket }) {
     return (bytes) => {
         packetMonitor.recordPacket();
 
@@ -276,6 +342,53 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
             case 0xC8:
                 analyzeAndDiscoverAirQuality(bytes, state.discoveredSensors, mqttClient, { saveState: saveCurrentState, topics });
                 break;
+            case 0x7F:
+                if (!analyzeAndDiscoverWallpadTime(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'invalid_wallpad_time_frame',
+                        bytes,
+                        note: 'Wallpad time frame failed checksum or date validation.',
+                    });
+                }
+                break;
+            case 0x24:
+                if (!analyzeAndDiscoverLifeInfoTemperature(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'unhandled_frame',
+                        bytes,
+                        note: 'Framed packet with a known length, but no parser handled it.',
+                    });
+                }
+                break;
+            case 0x8F:
+                if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'life_info_frame',
+                        bytes,
+                        note: 'Life information frame recorded for weather, temperature, and dust mapping.',
+                    });
+                } else {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'invalid_life_info_frame',
+                        bytes,
+                        note: 'Life information frame failed checksum validation.',
+                    });
+                }
+                break;
+            default:
+                if (!isKnownIgnoredPrimaryFrame(bytes)) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'unhandled_frame',
+                        bytes,
+                        note: 'Framed packet with a known length, but no parser handled it.',
+                    });
+                }
+                break;
         }
 
         const socket = getSocket();
@@ -285,18 +398,28 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
     };
 }
 
-function createMeteringPacketHandler({ state, mqttClient, topics, saveCurrentState, monthlyUsageConfig }) {
+function createMeteringPacketHandler({ state, mqttClient, topics, saveCurrentState, monthlyUsageConfig, packetCapture }) {
     return (bytes) => {
-        analyzeAndDiscoverMetering(bytes, state.discoveredMeters, mqttClient, {
+        const handled = analyzeAndDiscoverMetering(bytes, state.discoveredMeters, mqttClient, {
             monthlyMeteringState: state.monthlyMeteringState,
+            monthlyMeteringDate: state.lifeInfoState?.lastWallpadTime || new Date(),
             monthlyUsageConfig,
             saveState: saveCurrentState,
             topics,
         });
+
+        if (!handled && !isKnownIgnoredMeteringFrame(bytes)) {
+            packetCapture.record({
+                source: '검침 EW11',
+                kind: 'unhandled_metering_frame',
+                bytes,
+                note: 'Metering frame did not match the supported 32-byte usage packet.',
+            });
+        }
     };
 }
 
-function installShutdownHandlers({ mqttClient, primaryClient, meteringClient, availabilityController, saveCurrentState, packetMonitor }) {
+function installShutdownHandlers({ mqttClient, primaryClient, meteringClient, availabilityController, saveCurrentState, packetMonitor, packetCapture }) {
     let isShuttingDown = false;
 
     async function runShutdownStep(label, action, errors) {
@@ -319,6 +442,7 @@ function installShutdownHandlers({ mqttClient, primaryClient, meteringClient, av
         const errors = [];
 
         await runShutdownStep('패킷 모니터', () => packetMonitor.stop(), errors);
+        await runShutdownStep('알 수 없는 패킷 캡처', () => packetCapture.flush(), errors);
         await runShutdownStep('availability publish', () => availabilityController.setAllUnavailable(), errors);
         await runShutdownStep('상태 저장', saveCurrentState, errors);
         await runShutdownStep('MQTT 연결', () => mqttClient.end(), errors);
@@ -339,12 +463,17 @@ function installShutdownHandlers({ mqttClient, primaryClient, meteringClient, av
 }
 
 async function main() {
-    log('애드온을 시작합니다.');
+    log(`Commax Wallpad ${ADDON_VERSION} 애드온을 시작합니다.`);
 
     const config = loadConfig();
+    logMonthlyMeteringUsageConfig(config.monthlyMeteringUsageOverrides);
     const topics = createTopicBuilder(config.mqtt.topicPrefix);
     const state = await loadState();
     const saveCurrentState = () => saveState(state);
+    const packetCapture = createPacketCapture({
+        enabled: config.packetCapture.enabled,
+        filePath: config.packetCapture.path,
+    });
 
     const commandHandler = new CommandHandler({ topicPrefix: config.mqtt.topicPrefix });
 
@@ -369,9 +498,12 @@ async function main() {
             commandHandler,
             saveCurrentState,
             packetMonitor,
+            packetCapture,
             getSocket: () => primaryClient?.socket,
         }),
         writeCommand: (command) => commandHandler.safeWrite(command, primaryClient?.socket),
+        onUnknownPacket: (packet) => packetCapture.record(packet),
+        packetLengths: PRIMARY_PACKET_LENGTHS,
         state,
         mqttClient,
         onAvailable: () => availabilityController.setPrimaryAvailable(),
@@ -391,8 +523,11 @@ async function main() {
                 topics,
                 saveCurrentState,
                 monthlyUsageConfig: config.monthlyMeteringUsageOverrides,
+                packetCapture,
             }),
             writeCommand: (command) => commandHandler.safeWrite(command, meteringClient?.socket),
+            onUnknownPacket: (packet) => packetCapture.record(packet),
+            packetLengths: METERING_PACKET_LENGTHS,
             state,
             mqttClient,
             onAvailable: () => availabilityController.setMeteringAvailable(),
@@ -409,6 +544,7 @@ async function main() {
         availabilityController,
         saveCurrentState,
         packetMonitor,
+        packetCapture,
     });
 }
 

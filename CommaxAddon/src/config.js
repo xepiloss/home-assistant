@@ -19,6 +19,8 @@ const ENV_TO_OPTION = Object.freeze({
     COMMAX_MONTHLY_WARM_USAGE: 'monthly_warm_usage',
     COMMAX_MONTHLY_HEAT_USAGE: 'monthly_heat_usage',
     COMMAX_MONTHLY_GAS_USAGE: 'monthly_gas_usage',
+    COMMAX_UNKNOWN_PACKET_CAPTURE_ENABLED: 'unknown_packet_capture_enabled',
+    COMMAX_UNKNOWN_PACKET_CAPTURE_PATH: 'unknown_packet_capture_path',
 });
 
 const DEFAULT_CONFIG = Object.freeze({
@@ -37,6 +39,10 @@ const DEFAULT_CONFIG = Object.freeze({
         host: '',
         port: 8899,
     },
+    packetCapture: {
+        enabled: false,
+        path: '/share/commax_unknown_packets.jsonl',
+    },
 });
 
 function parseInteger(value, fallback) {
@@ -50,12 +56,51 @@ function parseOptionalNumber(value) {
     }
 
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function parseMonthlyMeteringPeriod(value) {
+    if (value === undefined || value === null || value === '') {
+        return '';
+    }
+
+    const period = String(value).trim();
+    const match = period.match(/^(\d{4})-(\d{2})$/);
+    if (!match) {
+        return '';
+    }
+
+    const month = Number(match[2]);
+    if (month < 1 || month > 12) {
+        return '';
+    }
+
+    return period;
+}
+
+function parseBoolean(value, fallback = false) {
+    if (value === undefined || value === null || value === '') {
+        return fallback;
+    }
+
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
 function normalizeMonthlyMeteringUsageOverrides(raw = {}) {
+    const rawPeriod = raw.monthly_metering_usage_period;
+    const period = parseMonthlyMeteringPeriod(rawPeriod);
+    const hasInvalidPeriod = rawPeriod !== undefined
+        && rawPeriod !== null
+        && String(rawPeriod).trim() !== ''
+        && period === '';
+
     return {
-        period: raw.monthly_metering_usage_period || '',
+        period,
+        invalidPeriod: hasInvalidPeriod ? String(rawPeriod).trim() : '',
         values: {
             water_acc_meter: parseOptionalNumber(raw.monthly_water_usage),
             electric_acc_meter: parseOptionalNumber(raw.monthly_electric_usage),
@@ -84,6 +129,10 @@ function normalizeConfig(raw = {}) {
             port: parseInteger(raw.ew11_metering_port, DEFAULT_CONFIG.metering.port),
         },
         monthlyMeteringUsageOverrides: normalizeMonthlyMeteringUsageOverrides(raw),
+        packetCapture: {
+            enabled: parseBoolean(raw.unknown_packet_capture_enabled, DEFAULT_CONFIG.packetCapture.enabled),
+            path: raw.unknown_packet_capture_path || DEFAULT_CONFIG.packetCapture.path,
+        },
     };
 }
 
@@ -129,6 +178,8 @@ module.exports = {
     loadConfig,
     normalizeConfig,
     normalizeMonthlyMeteringUsageOverrides,
+    parseBoolean,
+    parseMonthlyMeteringPeriod,
     parseOptionalNumber,
     readEnvOptions,
 };

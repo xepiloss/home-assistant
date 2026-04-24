@@ -125,6 +125,10 @@ const METERING_ICON_DISCOVERY_ID = 'commax_metering_icons_v2';
 const MONTHLY_METERING_DISCOVERY_ID = 'commax_metering_monthly';
 const MONTHLY_METERING_ICON_DISCOVERY_ID = 'commax_metering_monthly_icons_v2';
 const PARKING_ICON_DISCOVERY_VERSION = 2;
+const WALLPAD_TIME_DISCOVERY_VERSION = 4;
+const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';
+const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
+const LIFE_INFO_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_temperature';
 
 const MONTHLY_METERING_SENSORS = [
     {
@@ -174,6 +178,15 @@ const MONTHLY_METERING_SENSORS = [
     },
 ];
 
+const MONTHLY_METERING_SOURCE_LABELS = Object.freeze({
+    water_acc_meter: '수도 누적',
+    electric_acc_meter: '전기 누적',
+    warm_acc_meter: '온수 누적',
+    heat_acc_meter: '난방 누적',
+    gas_acc_meter: '가스 누적',
+});
+const monthlyUsageLogCache = new WeakMap();
+
 function calculateChecksum(bytes) {
     return bytes.reduce((sum, byte) => sum + byte, 0) & 0xFF;
 }
@@ -182,12 +195,32 @@ function byteToHex(byte) {
     return byte.toString(16).padStart(2, '0');
 }
 
+function formatBytes(bytes) {
+    return bytes.map((byte) => byteToHex(byte).toUpperCase()).join(' ');
+}
+
 function decodeBcdString(bytes) {
     return bytes.map(byteToHex).join('');
 }
 
 function decodeBcdNumber(bytes) {
     return Number.parseInt(decodeBcdString(bytes), 10);
+}
+
+function decodeBcdByte(byte) {
+    const high = byte >> 4;
+    const low = byte & 0x0F;
+
+    if (high > 9 || low > 9) {
+        return null;
+    }
+
+    return high * 10 + low;
+}
+
+function decodeBcdByteOrRaw(byte) {
+    const value = decodeBcdByte(byte);
+    return value === null ? byte : value;
 }
 
 function cloneDeviceInfo() {
@@ -225,6 +258,19 @@ function publishAvailability(mqttClient, topic, status) {
 
 function publishDiscovery(mqttClient, topic, payload, onSuccess, errorMessage) {
     mqttClient.publish(topic, JSON.stringify(payload), { retain: true }, async (err) => {
+        if (err) {
+            logError(errorMessage, err);
+            return;
+        }
+
+        if (onSuccess) {
+            await onSuccess();
+        }
+    });
+}
+
+function deleteDiscovery(mqttClient, topic, onSuccess, errorMessage) {
+    mqttClient.publish(topic, '', { retain: true }, async (err) => {
         if (err) {
             logError(errorMessage, err);
             return;
@@ -800,6 +846,213 @@ function analyzeAndDiscoverAirQuality(bytes, discoveredSensors, mqttClient, opti
     return true;
 }
 
+function hasValidChecksum(bytes) {
+    return bytes.length >= 8 && calculateChecksum(bytes.slice(0, 7)) === bytes[7];
+}
+
+function pad2(value) {
+    return String(value).padStart(2, '0');
+}
+
+function isValidWallpadDateTime({ year, month, day, hour, minute, second }) {
+    const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+
+    return date.getUTCFullYear() === year
+        && date.getUTCMonth() === month - 1
+        && date.getUTCDate() === day
+        && date.getUTCHours() === hour
+        && date.getUTCMinutes() === minute
+        && date.getUTCSeconds() === second;
+}
+
+function parseWallpadTimePacket(bytes) {
+    if (!bytes || bytes.length !== 8 || bytes[0] !== 0x7F || !hasValidChecksum(bytes)) {
+        return null;
+    }
+
+    const parts = bytes.slice(1, 7).map(decodeBcdByte);
+    if (parts.some((value) => value === null)) {
+        return null;
+    }
+
+    const [yearByte, month, day, hour, minute, second] = parts;
+    const wallpadTime = {
+        year: 2000 + yearByte,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+    };
+
+    if (!isValidWallpadDateTime(wallpadTime)) {
+        return null;
+    }
+
+    wallpadTime.period = `${wallpadTime.year}-${pad2(month)}`;
+    wallpadTime.display = `${wallpadTime.period}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}`;
+    wallpadTime.iso = `${wallpadTime.period}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:${pad2(second)}+09:00`;
+
+    return wallpadTime;
+}
+
+function analyzeAndDiscoverWallpadTime(bytes, lifeInfoState, mqttClient, options = {}) {
+    const parsed = parseWallpadTimePacket(bytes);
+    if (!parsed) {
+        return false;
+    }
+
+    const { saveState, topics } = buildContext(options);
+
+    lifeInfoState.lastWallpadTime = parsed;
+
+    const needsDiscoveryUpdate = lifeInfoState.wallpadTimeDiscoveryVersion !== WALLPAD_TIME_DISCOVERY_VERSION;
+
+    if (needsDiscoveryUpdate) {
+        const sensorConfig = {
+            name: '월패드 시간',
+            unique_id: WALLPAD_TIME_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'wallpad_time', 'state'),
+            availability_topic: topics.availability('life_info', 'wallpad_time'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            entity_category: 'diagnostic',
+            icon: 'mdi:clock-time-four-outline',
+            device: cloneDeviceInfo(),
+        };
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', WALLPAD_TIME_DISCOVERY_ID),
+            sensorConfig,
+            async () => {
+                lifeInfoState.wallpadTimeDiscovered = true;
+                lifeInfoState.wallpadTimeDiscoveryVersion = WALLPAD_TIME_DISCOVERY_VERSION;
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('life_info', 'wallpad_time'), 'available');
+            },
+            'Failed to publish wallpad time discovery:'
+        );
+    }
+
+    if (needsDiscoveryUpdate || lifeInfoState.lastPublishedWallpadTime !== parsed.display) {
+        lifeInfoState.lastPublishedWallpadTime = parsed.display;
+        publishRetained(mqttClient, topics.path('life_info', 'wallpad_time', 'state'), parsed.display);
+    }
+
+    return true;
+}
+
+function parseLifeInfoPacket(bytes) {
+    if (!bytes || bytes.length !== 8 || bytes[0] !== 0x8F || !hasValidChecksum(bytes)) {
+        return null;
+    }
+
+    return {
+        raw: formatBytes(bytes),
+        temperatureCode: decodeBcdByteOrRaw(bytes[1]),
+        weatherCode: bytes[2],
+        dustCode: bytes[3],
+        value1: decodeBcdByteOrRaw(bytes[4]),
+        value2: bytes[5],
+        value3: decodeBcdByteOrRaw(bytes[6]),
+    };
+}
+
+function analyzeAndDiscoverLifeInfo(bytes, lifeInfoState, mqttClient, options = {}) {
+    if (!parseLifeInfoPacket(bytes)) {
+        return false;
+    }
+
+    const { saveState, topics } = buildContext(options);
+
+    if (!lifeInfoState.rawPacketDiscoveryDeleteSent) {
+        deleteDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_RAW_DISCOVERY_ID),
+            async () => {
+                lifeInfoState.rawPacketDiscoveryDeleteSent = true;
+
+                if (lifeInfoState.rawPacketDiscovered) {
+                    lifeInfoState.rawPacketDiscovered = false;
+                    await saveState();
+                }
+            },
+            'Failed to delete life information packet discovery:'
+        );
+    }
+
+    return true;
+}
+
+function parseLifeInfoTemperaturePacket(bytes) {
+    if (!bytes || bytes.length !== 8 || bytes[0] !== 0x24 || !hasValidChecksum(bytes)) {
+        return null;
+    }
+
+    if (bytes[1] !== 0x01 || bytes[2] !== 0x01 || bytes[3] !== 0x20 || bytes[6] !== 0x00) {
+        return null;
+    }
+
+    const temperature = decodeBcdByteOrRaw(bytes[5]);
+    if (!Number.isFinite(temperature) || temperature > 60) {
+        return null;
+    }
+
+    return {
+        deviceId: byteToHex(bytes[2]),
+        temperature,
+        unknownCode: byteToHex(bytes[4]).toUpperCase(),
+        raw: formatBytes(bytes),
+    };
+}
+
+function analyzeAndDiscoverLifeInfoTemperature(bytes, lifeInfoState, mqttClient, options = {}) {
+    const parsed = parseLifeInfoTemperaturePacket(bytes);
+    if (!parsed) {
+        return false;
+    }
+
+    const { saveState, topics } = buildContext(options);
+
+    if (!lifeInfoState.lifeInfoTemperatureDiscovered) {
+        const sensorConfig = {
+            name: '생활정보 온도',
+            unique_id: LIFE_INFO_TEMPERATURE_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'temperature', 'state'),
+            json_attributes_topic: topics.path('life_info', 'temperature', 'attributes'),
+            availability_topic: topics.availability('life_info', 'temperature'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            unit_of_measurement: '°C',
+            device_class: 'temperature',
+            state_class: 'measurement',
+            device: cloneDeviceInfo(),
+        };
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_TEMPERATURE_DISCOVERY_ID),
+            sensorConfig,
+            async () => {
+                lifeInfoState.lifeInfoTemperatureDiscovered = true;
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('life_info', 'temperature'), 'available');
+            },
+            'Failed to publish life information temperature discovery:'
+        );
+    }
+
+    publishRetained(mqttClient, topics.path('life_info', 'temperature', 'state'), parsed.temperature);
+    publishRetained(mqttClient, topics.path('life_info', 'temperature', 'attributes'), JSON.stringify({
+        unknown_code: parsed.unknownCode,
+        device_id: parsed.deviceId,
+        raw: parsed.raw,
+    }));
+
+    return true;
+}
+
 function isMeteringPacket(bytes) {
     return bytes
         && bytes.length === 32
@@ -809,13 +1062,92 @@ function isMeteringPacket(bytes) {
 }
 
 function getMonthlyMeteringPeriod(date = new Date()) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
+    if (typeof date === 'string') {
+        const match = date.match(/^(\d{4})-(\d{2})/);
+        if (match) {
+            return `${match[1]}-${match[2]}`;
+        }
+    }
+
+    if (date && typeof date === 'object' && Number.isInteger(date.year) && Number.isInteger(date.month)) {
+        return `${date.year}-${pad2(date.month)}`;
+    }
+
+    const fallbackDate = date instanceof Date ? date : new Date();
+    const year = fallbackDate.getFullYear();
+    const month = String(fallbackDate.getMonth() + 1).padStart(2, '0');
     return `${year}-${month}`;
+}
+
+function getMonthlyMeteringDateSource(date = new Date()) {
+    if (date && typeof date === 'object' && Number.isInteger(date.year) && Number.isInteger(date.month)) {
+        return '월패드 시간 기준';
+    }
+
+    return '시스템 시간 기준';
 }
 
 function roundMeteringValue(value) {
     return Math.round(value * 1000) / 1000;
+}
+
+function getMonthlyMeteringSourceLabel(sourceId) {
+    return MONTHLY_METERING_SOURCE_LABELS[sourceId] || sourceId;
+}
+
+function shouldLogMonthlyUsageFormula(monthlyMeteringState, period, sourceId, usage, baseline) {
+    let loggedKeys = monthlyUsageLogCache.get(monthlyMeteringState);
+    if (!loggedKeys) {
+        loggedKeys = new Set();
+        monthlyUsageLogCache.set(monthlyMeteringState, loggedKeys);
+    }
+
+    const key = `${period}:${sourceId}:${usage}:${baseline}`;
+    if (loggedKeys.has(key)) {
+        return false;
+    }
+
+    loggedKeys.add(key);
+    return true;
+}
+
+function logMonthlyUsageFormula(type, period, sourceId, usage, currentValue, baseline) {
+    const calculatedUsage = roundMeteringValue(currentValue - baseline);
+    log(`월간 검침 보정 ${type} (${period}, ${getMonthlyMeteringSourceLabel(sourceId)}): 입력 보정값=${usage}, 현재 누적값=${currentValue}, 월초 누적 기준값=${baseline}, 현재 이번달 사용량=${calculatedUsage}, 계산식=${currentValue} - ${baseline} = ${calculatedUsage}`);
+}
+
+function getConfiguredMonthlyUsageEntries(usageConfig, values, period, appliedUsageConfig) {
+    const entries = [];
+    let changed = false;
+
+    Object.entries(usageConfig?.values || {}).forEach(([sourceId, usage]) => {
+        const currentValue = values[sourceId];
+        if (usage === undefined || currentValue === undefined) {
+            return;
+        }
+
+        if (!Number.isFinite(usage) || usage < 0) {
+            if (appliedUsageConfig.ignoredValues[sourceId] !== usage) {
+                log(`월간 검침 보정 무시 (${period}, ${getMonthlyMeteringSourceLabel(sourceId)}): 입력 보정값=${usage}. 숫자가 아니거나 음수라 적용하지 않습니다.`);
+                appliedUsageConfig.ignoredValues[sourceId] = usage;
+                changed = true;
+            }
+            return;
+        }
+
+        if (!Number.isFinite(currentValue) || usage > currentValue) {
+            if (appliedUsageConfig.ignoredValues[sourceId] !== usage) {
+                log(`월간 검침 보정 무시 (${period}, ${getMonthlyMeteringSourceLabel(sourceId)}): 입력 보정값=${usage}, 현재 누적값=${currentValue}. 입력 보정값이 현재 누적값보다 커서 월초 누적 기준값을 계산할 수 없습니다.`);
+                appliedUsageConfig.ignoredValues[sourceId] = usage;
+                changed = true;
+            }
+            return;
+        }
+
+        entries.push([sourceId, usage]);
+    });
+
+    return { changed, entries };
 }
 
 function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, values) {
@@ -824,9 +1156,41 @@ function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, 
     }
 
     let changed = false;
+    const appliedUsageConfig = monthlyMeteringState.appliedUsageConfig || {
+        period: null,
+        values: {},
+        ignoredValues: {},
+    };
 
-    Object.entries(usageConfig.values || {}).forEach(([sourceId, usage]) => {
-        if (usage === undefined || values[sourceId] === undefined) {
+    if (appliedUsageConfig.period !== period) {
+        appliedUsageConfig.period = period;
+        appliedUsageConfig.values = {};
+        appliedUsageConfig.ignoredValues = {};
+        changed = true;
+    }
+
+    if (!appliedUsageConfig.values) {
+        appliedUsageConfig.values = {};
+    }
+
+    if (!appliedUsageConfig.ignoredValues) {
+        appliedUsageConfig.ignoredValues = {};
+    }
+
+    const configuredEntries = getConfiguredMonthlyUsageEntries(usageConfig, values, period, appliedUsageConfig);
+    changed = configuredEntries.changed || changed;
+
+    if (configuredEntries.entries.length === 0) {
+        monthlyMeteringState.appliedUsageConfig = appliedUsageConfig;
+        return changed;
+    }
+
+    configuredEntries.entries.forEach(([sourceId, usage]) => {
+        if (appliedUsageConfig.values[sourceId] === usage && monthlyMeteringState.baselines[sourceId] !== undefined) {
+            const baseline = monthlyMeteringState.baselines[sourceId];
+            if (shouldLogMonthlyUsageFormula(monthlyMeteringState, period, sourceId, usage, baseline)) {
+                logMonthlyUsageFormula('유지', period, sourceId, usage, values[sourceId], baseline);
+            }
             return;
         }
 
@@ -836,7 +1200,16 @@ function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, 
             monthlyMeteringState.baselines[sourceId] = baseline;
             changed = true;
         }
+
+        logMonthlyUsageFormula('적용', period, sourceId, usage, values[sourceId], baseline);
+        shouldLogMonthlyUsageFormula(monthlyMeteringState, period, sourceId, usage, baseline);
+
+        appliedUsageConfig.values[sourceId] = usage;
+        delete appliedUsageConfig.ignoredValues[sourceId];
+        changed = true;
     });
+
+    monthlyMeteringState.appliedUsageConfig = appliedUsageConfig;
 
     return changed;
 }
@@ -847,11 +1220,17 @@ function calculateMonthlyMeteringValues(values, monthlyMeteringState, date = new
     }
 
     const period = getMonthlyMeteringPeriod(date);
+    const previousPeriod = monthlyMeteringState.period;
+    const dateSource = getMonthlyMeteringDateSource(date);
     let changed = false;
 
-    if (monthlyMeteringState.period !== period) {
+    if (previousPeriod !== period) {
         monthlyMeteringState.period = period;
         monthlyMeteringState.baselines = {};
+        monthlyMeteringState.appliedUsageConfig = {
+            period: null,
+            values: {},
+        };
         changed = true;
     }
 
@@ -869,6 +1248,10 @@ function calculateMonthlyMeteringValues(values, monthlyMeteringState, date = new
             monthlyMeteringState.baselines[sensor.sourceId] = currentValue;
             monthlyValues[sensor.id] = 0;
             changed = true;
+            const periodReason = previousPeriod && previousPeriod !== period
+                ? `${dateSource} 월 변경 ${previousPeriod} -> ${period}`
+                : `${dateSource} ${period} 초기 설정`;
+            log(`월간 검침 자동 기준값 설정 (${periodReason}, ${getMonthlyMeteringSourceLabel(sensor.sourceId)}): 현재 누적값=${currentValue}, 월초 누적 기준값=${currentValue}`);
             return;
         }
 
@@ -884,6 +1267,7 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, options
     }
 
     const { monthlyMeteringState, monthlyUsageConfig, saveState, topics } = buildContext(options);
+    const monthlyMeteringDate = options.monthlyMeteringDate || new Date();
     const values = {
         water_meter: decodeBcdNumber([bytes[5], bytes[6]]),
         water_acc_meter: decodeBcdNumber([bytes[8], bytes[9]]) / 10,
@@ -897,7 +1281,7 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, options
         heat_acc_meter: decodeBcdNumber([bytes[28], bytes[29]]) / 100,
     };
 
-    const monthlyResult = calculateMonthlyMeteringValues(values, monthlyMeteringState, new Date(), monthlyUsageConfig);
+    const monthlyResult = calculateMonthlyMeteringValues(values, monthlyMeteringState, monthlyMeteringDate, monthlyUsageConfig);
 
     if (!discoveredMeters.has(METERING_DISCOVERY_ID) || !discoveredMeters.has(METERING_ICON_DISCOVERY_ID)) {
         METERING_SENSORS.forEach((sensor) => {
@@ -986,12 +1370,15 @@ module.exports = {
     WALLPAD_DEVICE,
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverElevator,
+    analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMasterLight,
     analyzeAndDiscoverMetering,
     analyzeAndDiscoverOutlet,
     analyzeAndDiscoverTemperature,
     analyzeAndDiscoverVentilation,
+    analyzeAndDiscoverWallpadTime,
     analyzeParkingAreaAndCarNumber,
     calculateChecksum,
     applyConfiguredMonthlyUsage,
@@ -1000,6 +1387,9 @@ module.exports = {
     isMeteringPacket,
     parseMasterLightPacket,
     parseOutletPacket,
+    parseLifeInfoPacket,
+    parseLifeInfoTemperaturePacket,
     parseTemperaturePacket,
     parseVentilationPacket,
+    parseWallpadTimePacket,
 };

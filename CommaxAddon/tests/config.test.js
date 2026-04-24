@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { normalizeConfig, readEnvOptions } = require('../src/config');
+const { normalizeConfig, parseMonthlyMeteringPeriod, readEnvOptions } = require('../src/config');
 const { createTopicBuilder } = require('../src/topics');
 
 test('normalizeConfig fills defaults and keeps overrides', () => {
@@ -18,6 +18,8 @@ test('normalizeConfig fills defaults and keeps overrides', () => {
     assert.equal(config.metering.port, 8899);
     assert.equal(config.monthlyMeteringUsageOverrides.period, '');
     assert.equal(config.monthlyMeteringUsageOverrides.values.electric_acc_meter, undefined);
+    assert.equal(config.packetCapture.enabled, false);
+    assert.equal(config.packetCapture.path, '/share/commax_unknown_packets.jsonl');
 });
 
 test('readEnvOptions maps shell env vars to addon options', () => {
@@ -33,6 +35,8 @@ test('readEnvOptions maps shell env vars to addon options', () => {
         EW11_METERING_PORT: '8897',
         COMMAX_MONTHLY_METERING_USAGE_PERIOD: '2026-04',
         COMMAX_MONTHLY_ELECTRIC_USAGE: '213.8',
+        COMMAX_UNKNOWN_PACKET_CAPTURE_ENABLED: 'true',
+        COMMAX_UNKNOWN_PACKET_CAPTURE_PATH: '/share/custom_unknown.jsonl',
     });
 
     assert.deepEqual(options, {
@@ -47,6 +51,8 @@ test('readEnvOptions maps shell env vars to addon options', () => {
         ew11_metering_port: '8897',
         monthly_metering_usage_period: '2026-04',
         monthly_electric_usage: '213.8',
+        unknown_packet_capture_enabled: 'true',
+        unknown_packet_capture_path: '/share/custom_unknown.jsonl',
     });
 });
 
@@ -62,6 +68,26 @@ test('normalizeConfig parses optional monthly metering usage overrides', () => {
     assert.equal(config.monthlyMeteringUsageOverrides.values.water_acc_meter, undefined);
     assert.equal(config.monthlyMeteringUsageOverrides.values.electric_acc_meter, 213.8);
     assert.equal(config.monthlyMeteringUsageOverrides.values.gas_acc_meter, 12.3);
+});
+
+test('normalizeConfig ignores invalid monthly metering override inputs', () => {
+    const config = normalizeConfig({
+        monthly_metering_usage_period: 'garbage',
+        monthly_water_usage: '-1',
+        monthly_electric_usage: '213.8',
+    });
+
+    assert.equal(config.monthlyMeteringUsageOverrides.period, '');
+    assert.equal(config.monthlyMeteringUsageOverrides.invalidPeriod, 'garbage');
+    assert.equal(config.monthlyMeteringUsageOverrides.values.water_acc_meter, undefined);
+    assert.equal(config.monthlyMeteringUsageOverrides.values.electric_acc_meter, 213.8);
+});
+
+test('parseMonthlyMeteringPeriod accepts only yyyy-MM calendar months', () => {
+    assert.equal(parseMonthlyMeteringPeriod('2026-04'), '2026-04');
+    assert.equal(parseMonthlyMeteringPeriod('2026-4'), '');
+    assert.equal(parseMonthlyMeteringPeriod('2026-13'), '');
+    assert.equal(parseMonthlyMeteringPeriod('abc'), '');
 });
 
 test('createTopicBuilder joins mqtt and discovery topics consistently', () => {

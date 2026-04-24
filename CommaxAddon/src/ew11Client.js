@@ -19,6 +19,8 @@ class Ew11Client {
         mqttClient,
         onAvailable,
         onUnavailable,
+        onUnknownPacket,
+        packetLengths,
         usePacketFramer = true,
     }) {
         this.name = name;
@@ -30,8 +32,9 @@ class Ew11Client {
         this.mqttClient = mqttClient;
         this.onAvailable = onAvailable;
         this.onUnavailable = onUnavailable;
+        this.onUnknownPacket = onUnknownPacket || (() => undefined);
         this.usePacketFramer = usePacketFramer;
-        this.packetFramer = usePacketFramer ? new PacketFramer() : null;
+        this.packetFramer = usePacketFramer ? new PacketFramer({ packetLengths }) : null;
         this.logUnknownPackets = shouldLogUnknownPackets();
         this.reconnectDelay = 30000; // 30 seconds
         this.maxRetryAttempts = 10;
@@ -104,6 +107,15 @@ class Ew11Client {
             for (const bytes of dropped) {
                 log(`<- ${formatBytes(bytes)} (unknown packet skipped)`);
             }
+        }
+
+        for (const bytes of dropped) {
+            this.onUnknownPacket({
+                source: this.name,
+                kind: 'dropped_bytes',
+                bytes,
+                note: 'Packet framer dropped bytes while resyncing to a known header.',
+            });
         }
 
         for (const bytes of frames) {

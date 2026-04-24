@@ -1,0 +1,14 @@
+{
+  "name": "commax-wallpad-addon",
+  "version": "1.1.1-dev",
+  "description": "Home Assistant addon for Commax wallpad control via EW11 TCP socket",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "start:local": "node --env-file=.env src/main.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.4"
+  }
+}

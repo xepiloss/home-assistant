@@ -352,16 +352,18 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                     });
                 }
                 break;
-            case 0x24:
-                if (!analyzeAndDiscoverLifeInfoTemperature(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
-                    packetCapture.record({
-                        source: '메인 EW11',
-                        kind: 'unhandled_frame',
-                        bytes,
-                        note: 'Framed packet with a known length, but no parser handled it.',
-                    });
-                }
+            case 0x24: {
+                const handled = analyzeAndDiscoverLifeInfoTemperature(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
+                packetCapture.record({
+                    source: '메인 EW11',
+                    kind: handled ? 'life_info_temperature_frame' : 'unhandled_frame',
+                    bytes,
+                    note: handled
+                        ? 'Confirmed life information temperature frame recorded for unmapped bytes such as unknown_code.'
+                        : 'Framed packet with a known length, but no parser handled it.',
+                });
                 break;
+            }
             case 0x8F:
                 if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
                     packetCapture.record({

@@ -22,6 +22,17 @@ class PriorityQueue {
         return root;
     }
 
+    removeWhere(predicate) {
+        const originalLength = this.heap.length;
+        this.heap = this.heap.filter((node) => !predicate(node));
+
+        for (let index = Math.floor(this.heap.length / 2) - 1; index >= 0; index -= 1) {
+            this.#sinkDownFrom(index);
+        }
+
+        return originalLength - this.heap.length;
+    }
+
     #bubbleUp() {
         let index = this.heap.length - 1;
         while (index > 0) {
@@ -33,7 +44,11 @@ class PriorityQueue {
     }
 
     #sinkDown() {
-        let index = 0;
+        this.#sinkDownFrom(0);
+    }
+
+    #sinkDownFrom(startIndex) {
+        let index = startIndex;
         const length = this.heap.length;
         while (true) {
             const left = 2 * index + 1;

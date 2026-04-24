@@ -1,109 +1,321 @@
 const { log, logError } = require('./utils');
+const { createTopicBuilder } = require('./topics');
 
-const topicPrefix = process.env.MQTT_TOPIC_PREFIX || 'devcommax';
+const WALLPAD_DEVICE = Object.freeze({
+    identifiers: ['Commax'],
+    name: '월패드',
+    manufacturer: 'Commax',
+});
+
+const AIR_QUALITY_SENSORS = [
+    {
+        id: 'co2',
+        name: '이산화탄소',
+        uniqueId: 'commax_co2',
+        unit: 'ppm',
+        deviceClass: 'carbon_dioxide',
+        icon: 'mdi:molecule-co2',
+    },
+    {
+        id: 'pm2_5',
+        name: '초미세먼지(PM2.5)',
+        uniqueId: 'commax_pm2_5',
+        unit: 'µg/m³',
+        deviceClass: 'pm25',
+        icon: 'mdi:air-filter',
+    },
+    {
+        id: 'pm10',
+        name: '미세먼지(PM10)',
+        uniqueId: 'commax_pm10',
+        unit: 'µg/m³',
+        deviceClass: 'pm10',
+        icon: 'mdi:blur',
+    },
+];
+
+const AIR_QUALITY_DISCOVERY_ID = 'commax_air_quality';
+const AIR_QUALITY_ICON_DISCOVERY_ID = 'commax_air_quality_icons_v2';
+
+const METERING_SENSORS = [
+    {
+        id: 'water_meter',
+        name: '실시간 수도 사용량',
+        uniqueId: 'commax_water_meter',
+        unit: 'm³/h',
+        deviceClass: 'water',
+        icon: 'mdi:water-pump',
+    },
+    {
+        id: 'electric_meter',
+        name: '실시간 전기 사용량',
+        uniqueId: 'commax_electric_meter',
+        unit: 'W',
+        deviceClass: 'power',
+        icon: 'mdi:flash',
+    },
+    {
+        id: 'warm_meter',
+        name: '실시간 온수 사용량',
+        uniqueId: 'commax_warm_meter',
+        unit: 'm³/h',
+        deviceClass: 'water',
+        icon: 'mdi:water-thermometer',
+    },
+    {
+        id: 'heat_meter',
+        name: '실시간 난방 사용량',
+        uniqueId: 'commax_heat_meter',
+        unit: 'kW',
+        deviceClass: 'power',
+        icon: 'mdi:radiator',
+    },
+    {
+        id: 'gas_meter',
+        name: '실시간 가스 사용량',
+        uniqueId: 'commax_gas_meter',
+        unit: 'm³/h',
+        deviceClass: 'water',
+        icon: 'mdi:fire',
+    },
+    {
+        id: 'water_acc_meter',
+        name: '누적 수도 사용량',
+        uniqueId: 'commax_water_acc_meter',
+        unit: 'm³',
+        deviceClass: 'water',
+        icon: 'mdi:water',
+    },
+    {
+        id: 'electric_acc_meter',
+        name: '누적 전기 사용량',
+        uniqueId: 'commax_electric_acc_meter',
+        unit: 'kWh',
+        deviceClass: 'energy',
+        icon: 'mdi:transmission-tower',
+    },
+    {
+        id: 'warm_acc_meter',
+        name: '누적 온수 사용량',
+        uniqueId: 'commax_warm_acc_meter',
+        unit: 'm³',
+        deviceClass: 'water',
+        icon: 'mdi:water-thermometer',
+    },
+    {
+        id: 'heat_acc_meter',
+        name: '누적 난방 사용량',
+        uniqueId: 'commax_heat_acc_meter',
+        unit: 'm³',
+        deviceClass: 'water',
+        icon: 'mdi:radiator',
+    },
+    {
+        id: 'gas_acc_meter',
+        name: '누적 가스 사용량',
+        uniqueId: 'commax_gas_acc_meter',
+        unit: 'm³',
+        deviceClass: 'water',
+        icon: 'mdi:fire',
+    },
+];
+
+const METERING_DISCOVERY_ID = 'commax_metering';
+const METERING_ICON_DISCOVERY_ID = 'commax_metering_icons_v2';
+const MONTHLY_METERING_DISCOVERY_ID = 'commax_metering_monthly';
+const MONTHLY_METERING_ICON_DISCOVERY_ID = 'commax_metering_monthly_icons_v2';
+const PARKING_ICON_DISCOVERY_VERSION = 2;
+
+const MONTHLY_METERING_SENSORS = [
+    {
+        id: 'water_monthly_meter',
+        sourceId: 'water_acc_meter',
+        name: '이번달 수도 사용량',
+        uniqueId: 'commax_water_monthly_meter',
+        unit: 'm³',
+        deviceClass: 'water',
+        icon: 'mdi:water',
+    },
+    {
+        id: 'electric_monthly_meter',
+        sourceId: 'electric_acc_meter',
+        name: '이번달 전기 사용량',
+        uniqueId: 'commax_electric_monthly_meter',
+        unit: 'kWh',
+        deviceClass: 'energy',
+        icon: 'mdi:flash',
+    },
+    {
+        id: 'warm_monthly_meter',
+        sourceId: 'warm_acc_meter',
+        name: '이번달 온수 사용량',
+        uniqueId: 'commax_warm_monthly_meter',
+        unit: 'm³',
+        deviceClass: 'water',
+        icon: 'mdi:water-thermometer',
+    },
+    {
+        id: 'heat_monthly_meter',
+        sourceId: 'heat_acc_meter',
+        name: '이번달 난방 사용량',
+        uniqueId: 'commax_heat_monthly_meter',
+        unit: 'm³',
+        deviceClass: 'water',
+        icon: 'mdi:radiator',
+    },
+    {
+        id: 'gas_monthly_meter',
+        sourceId: 'gas_acc_meter',
+        name: '이번달 가스 사용량',
+        uniqueId: 'commax_gas_monthly_meter',
+        unit: 'm³',
+        deviceClass: 'water',
+        icon: 'mdi:fire',
+    },
+];
 
 function calculateChecksum(bytes) {
-    const sum = bytes.reduce((acc, byte) => acc + byte, 0);
-    return sum & 0xFF;
+    return bytes.reduce((sum, byte) => sum + byte, 0) & 0xFF;
+}
+
+function byteToHex(byte) {
+    return byte.toString(16).padStart(2, '0');
+}
+
+function decodeBcdString(bytes) {
+    return bytes.map(byteToHex).join('');
+}
+
+function decodeBcdNumber(bytes) {
+    return Number.parseInt(decodeBcdString(bytes), 10);
+}
+
+function cloneDeviceInfo() {
+    return {
+        ...WALLPAD_DEVICE,
+        identifiers: [...WALLPAD_DEVICE.identifiers],
+    };
+}
+
+function applyIcon(config, sensor) {
+    if (sensor.icon) {
+        config.icon = sensor.icon;
+    }
+
+    return config;
+}
+
+function buildContext(options = {}) {
+    const topicPrefix = options.topicPrefix || 'devcommax';
+    return {
+        monthlyUsageConfig: options.monthlyUsageConfig || null,
+        monthlyMeteringState: options.monthlyMeteringState || null,
+        saveState: options.saveState || (async () => undefined),
+        topics: options.topics || createTopicBuilder(topicPrefix),
+    };
+}
+
+function publishRetained(mqttClient, topic, message, options = {}, callback) {
+    mqttClient.publish(topic, String(message), { retain: true, ...options }, callback);
+}
+
+function publishAvailability(mqttClient, topic, status) {
+    publishRetained(mqttClient, topic, status, { qos: 1 });
+}
+
+function publishDiscovery(mqttClient, topic, payload, onSuccess, errorMessage) {
+    mqttClient.publish(topic, JSON.stringify(payload), { retain: true }, async (err) => {
+        if (err) {
+            logError(errorMessage, err);
+            return;
+        }
+
+        if (onSuccess) {
+            await onSuccess();
+        }
+    });
 }
 
 function parseOutletPacket(bytes) {
-    const header = bytes[0];
-    const state = bytes[1];
-    const deviceId = bytes[2];
-    const mode = bytes[3];
-    const reserved = bytes[4];
-    const powerHigh = bytes[5];
-    const powerLow = bytes[6];
-    const checksum = bytes[7];
+    if (bytes.length !== 8 || ![0xF9, 0xFA].includes(bytes[0])) {
+        return null;
+    }
 
-    if (bytes.length !== 8 || ![0xF9, 0xFA].includes(bytes[0])) return null;
+    const stateByte = bytes[1];
+    let state;
 
-    let stateStr;
-    switch (state) {
+    switch (stateByte) {
         case 0x11:
-            stateStr = 'AUTO_ON';
+            state = 'AUTO_ON';
             break;
         case 0x01:
-            stateStr = 'MANUAL_ON';
+            state = 'MANUAL_ON';
             break;
         case 0x00:
-            stateStr = 'MANUAL_OFF';
+            state = 'MANUAL_OFF';
             break;
         case 0x10:
-            stateStr = 'AUTO_OFF';
+            state = 'AUTO_OFF';
             break;
         default:
             return null;
     }
 
-    const isCurrentMode = (mode === 0x10);
-    const powerStr = powerHigh.toString(16).padStart(2, '0') + powerLow.toString(16).padStart(2, '0');
-    const power = parseInt(powerStr, 10);
-    const calculatedChecksum = calculateChecksum(bytes.slice(0, 7));
-    const isValid = (calculatedChecksum === checksum);
+    const checksum = bytes[7];
+    if (calculateChecksum(bytes.slice(0, 7)) !== checksum) {
+        return null;
+    }
 
     return {
-        deviceId: deviceId.toString(16).padStart(2, '0'),
-        state: stateStr,
-        mode: isCurrentMode ? 'current' : 'standby',
-        power: power,
-        valid: isValid
+        deviceId: byteToHex(bytes[2]),
+        state,
+        mode: bytes[3] === 0x10 ? 'current' : 'standby',
+        power: decodeBcdNumber([bytes[5], bytes[6]]),
     };
 }
 
-function analyzeAndDiscoverOutlet(bytes, discoveredOutlets, mqttClient, saveState) {
+function analyzeAndDiscoverOutlet(bytes, discoveredOutlets, mqttClient, options = {}) {
     const parsed = parseOutletPacket(bytes);
-    if (!parsed || !parsed.valid) {
-        // log('체크섬 오류 :', bytes.map(b => b.toString(16).padStart(2, '0')).join(' ').toUpperCase());
+    if (!parsed) {
         return;
     }
 
-    const {deviceId, state, mode, power} = parsed;
+    const { saveState, topics } = buildContext(options);
+    const { deviceId, state, mode, power } = parsed;
     const uniqueId = `commax_outlet_${deviceId}`;
-    const topicPrefix = process.env.MQTT_TOPIC_PREFIX || 'devcommax';
 
     if (!discoveredOutlets.has(uniqueId)) {
-        const discoveryTopic = `homeassistant/switch/${uniqueId}/config`;
         const switchConfig = {
             name: `대기전력 ${deviceId}`,
             unique_id: uniqueId,
-            state_topic: `${topicPrefix}/outlet/${deviceId}/state`,
-            command_topic: `${topicPrefix}/outlet/${deviceId}/set`,
-            availability_topic: `${topicPrefix}/outlet/${deviceId}/availability`,
+            state_topic: topics.path('outlet', deviceId, 'state'),
+            command_topic: topics.path('outlet', deviceId, 'set'),
+            availability_topic: topics.availability('outlet', deviceId),
             payload_on: 'ON',
             payload_off: 'OFF',
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax",
-            }
+            device: cloneDeviceInfo(),
         };
 
         const currentPowerConfig = {
             name: `대기전력 ${deviceId} 실시간`,
             unique_id: `${uniqueId}_current_power`,
-            state_topic: `${topicPrefix}/outlet/${deviceId}/current_power`,
-            availability_topic: `${topicPrefix}/outlet/${deviceId}/current_power/availability`,
+            state_topic: topics.path('outlet', deviceId, 'current_power'),
+            availability_topic: topics.availability('outlet', deviceId, 'current_power'),
             payload_available: 'available',
             payload_not_available: 'unavailable',
             unit_of_measurement: 'W',
             device_class: 'power',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax",
-            }
+            device: cloneDeviceInfo(),
         };
 
         const standbyPowerConfig = {
             name: `대기전력 ${deviceId} 차단값`,
             unique_id: `${uniqueId}_standby_power`,
-            state_topic: `${topicPrefix}/outlet/${deviceId}/standby_power`,
-            command_topic: `${topicPrefix}/outlet/${deviceId}/standby_power/set`,
-            availability_topic: `${topicPrefix}/outlet/${deviceId}/standby_power/availability`,
+            state_topic: topics.path('outlet', deviceId, 'standby_power'),
+            command_topic: topics.path('outlet', deviceId, 'standby_power', 'set'),
+            availability_topic: topics.availability('outlet', deviceId, 'standby_power'),
             payload_available: 'available',
             payload_not_available: 'unavailable',
             unit_of_measurement: 'W',
@@ -111,727 +323,683 @@ function analyzeAndDiscoverOutlet(bytes, discoveredOutlets, mqttClient, saveStat
             min: 0,
             max: 50,
             mode: 'box',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax",
-            }
+            device: cloneDeviceInfo(),
         };
 
         const standbyModeConfig = {
             name: `대기전력 ${deviceId} 모드`,
             unique_id: `${uniqueId}_standby_mode`,
-            state_topic: `${topicPrefix}/outlet/${deviceId}/standby_mode`,
-            command_topic: `${topicPrefix}/outlet/${deviceId}/standby_mode/set`,
-            availability_topic: `${topicPrefix}/outlet/${deviceId}/standby_mode/availability`,
+            state_topic: topics.path('outlet', deviceId, 'standby_mode'),
+            command_topic: topics.path('outlet', deviceId, 'standby_mode', 'set'),
+            availability_topic: topics.availability('outlet', deviceId, 'standby_mode'),
             payload_on: 'AUTO',
             payload_off: 'MANUAL',
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax",
-            }
+            device: cloneDeviceInfo(),
         };
 
-        mqttClient.publish(discoveryTopic, JSON.stringify(switchConfig), {retain: true}, async (err) => {
-            if (err) {
-                logError(`Failed to publish switch discovery for ${uniqueId}:`, err);
-            } else {
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('switch', uniqueId),
+            switchConfig,
+            async () => {
                 discoveredOutlets.add(uniqueId);
-                await saveState(state);
-                mqttClient.publish(`${topicPrefix}/outlet/${deviceId}/availability`, 'available', { retain: true, qos: 1 });
-                mqttClient.publish(`${topicPrefix}/outlet/${deviceId}/standby_mode/availability`, 'available', { retain: true, qos: 1 });
-                mqttClient.publish(`${topicPrefix}/outlet/${deviceId}/standby_power/availability`, 'available', { retain: true, qos: 1 });
-                mqttClient.publish(`${topicPrefix}/outlet/${deviceId}/current_power/availability`, 'available', { retain: true, qos: 1 });
-            }
-        });
-        mqttClient.publish(`homeassistant/sensor/${uniqueId}_current_power/config`, JSON.stringify(currentPowerConfig), {retain: true});
-        mqttClient.publish(`homeassistant/number/${uniqueId}_standby_power/config`, JSON.stringify(standbyPowerConfig), {retain: true});
-        mqttClient.publish(`homeassistant/switch/${uniqueId}_standby_mode/config`, JSON.stringify(standbyModeConfig), {retain: true});
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('outlet', deviceId), 'available');
+                publishAvailability(mqttClient, topics.availability('outlet', deviceId, 'standby_mode'), 'available');
+                publishAvailability(mqttClient, topics.availability('outlet', deviceId, 'standby_power'), 'available');
+                publishAvailability(mqttClient, topics.availability('outlet', deviceId, 'current_power'), 'available');
+            },
+            `Failed to publish switch discovery for ${uniqueId}:`
+        );
+
+        publishRetained(mqttClient, topics.discovery('sensor', `${uniqueId}_current_power`), JSON.stringify(currentPowerConfig));
+        publishRetained(mqttClient, topics.discovery('number', `${uniqueId}_standby_power`), JSON.stringify(standbyPowerConfig));
+        publishRetained(mqttClient, topics.discovery('switch', `${uniqueId}_standby_mode`), JSON.stringify(standbyModeConfig));
     }
 
-    const simplifiedState = (state === 'AUTO_ON' || state === 'MANUAL_ON') ? 'ON' : 'OFF';
-    const standbyMode = (state === 'AUTO_ON' || state === 'AUTO_OFF') ? 'AUTO' : 'MANUAL';
+    const simplifiedState = state === 'AUTO_ON' || state === 'MANUAL_ON' ? 'ON' : 'OFF';
+    const standbyMode = state === 'AUTO_ON' || state === 'AUTO_OFF' ? 'AUTO' : 'MANUAL';
 
-    mqttClient.publish(`${topicPrefix}/outlet/${deviceId}/state`, simplifiedState, {retain: true});
-    mqttClient.publish(`${topicPrefix}/outlet/${deviceId}/standby_mode`, standbyMode, {retain: true});
+    publishRetained(mqttClient, topics.path('outlet', deviceId, 'state'), simplifiedState);
+    publishRetained(mqttClient, topics.path('outlet', deviceId, 'standby_mode'), standbyMode);
 
     if (mode === 'current') {
-        mqttClient.publish(`${topicPrefix}/outlet/${deviceId}/current_power`, power.toString(), {retain: true});
-    } else if (mode === 'standby') {
-        mqttClient.publish(`${topicPrefix}/outlet/${deviceId}/standby_power`, power.toString(), {retain: true});
+        publishRetained(mqttClient, topics.path('outlet', deviceId, 'current_power'), power);
+    } else {
+        publishRetained(mqttClient, topics.path('outlet', deviceId, 'standby_power'), power);
     }
 }
 
-function analyzeAndDiscoverLight(bytes, discoveredLights, mqttClient, saveState) {
-    if (bytes.length !== 8 || ![0xB0, 0xB1].includes(bytes[0])) return null;
+function analyzeAndDiscoverLight(bytes, discoveredLights, mqttClient, options = {}) {
+    if (bytes.length !== 8 || ![0xB0, 0xB1].includes(bytes[0])) {
+        return;
+    }
 
-    const deviceId = bytes[2].toString(16).padStart(2, '0');
-    const power = bytes[1];
+    const { saveState, topics } = buildContext(options);
+    const deviceId = byteToHex(bytes[2]);
+    const power = bytes[1] === 0x01 ? 'ON' : 'OFF';
     const brightness = bytes[5];
     const canSetBrightness = bytes[6] === 0x05;
     const uniqueId = `commax_light_${deviceId}`;
 
-    const lightData = {
-        power: power === 0x01 ? 'ON' : 'OFF',
-        brightness: brightness,
-        canSetBrightness: canSetBrightness
-    };
-
     if (!discoveredLights.has(uniqueId)) {
-        const discoveryTopic = `homeassistant/light/light_${deviceId}/config`;
         const discoveryPayload = {
             name: `조명 ${deviceId}`,
             unique_id: uniqueId,
-            state_topic: `${topicPrefix}/light/${deviceId}/state`,
-            command_topic: `${topicPrefix}/light/${deviceId}/set`,
-            availability_topic: `${topicPrefix}/light/${deviceId}/availability`,
+            state_topic: topics.path('light', deviceId, 'state'),
+            command_topic: topics.path('light', deviceId, 'set'),
+            availability_topic: topics.availability('light', deviceId),
             payload_on: 'ON',
             payload_off: 'OFF',
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax",
-            }
+            device: cloneDeviceInfo(),
         };
 
         if (canSetBrightness) {
-            discoveryPayload.brightness_state_topic = `${topicPrefix}/light/${deviceId}/brightness`;
-            discoveryPayload.brightness_command_topic = `${topicPrefix}/light/${deviceId}/brightness/set`;
+            discoveryPayload.brightness_state_topic = topics.path('light', deviceId, 'brightness');
+            discoveryPayload.brightness_command_topic = topics.path('light', deviceId, 'brightness', 'set');
             discoveryPayload.brightness_scale = 5;
         }
 
-        mqttClient.publish(discoveryTopic, JSON.stringify(discoveryPayload), {retain: true}, async (err) => {
-            if (err) {
-                logError(`Failed to publish light discovery for ${deviceId}:`, err);
-            } else {
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('light', `light_${deviceId}`),
+            discoveryPayload,
+            async () => {
                 discoveredLights.add(uniqueId);
-                await saveState(discoveredLights);
-                mqttClient.publish(`${topicPrefix}/light/${deviceId}/availability`, 'available', { retain: true, qos: 1 });
-            }
-        });
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('light', deviceId), 'available');
+            },
+            `Failed to publish light discovery for ${deviceId}:`
+        );
     }
 
-    mqttClient.publish(`${topicPrefix}/light/${deviceId}/state`, lightData.power, {retain: true});
+    publishRetained(mqttClient, topics.path('light', deviceId, 'state'), power);
     if (canSetBrightness) {
-        mqttClient.publish(`${topicPrefix}/light/${deviceId}/brightness`, lightData.brightness.toString(), {retain: true});
+        publishRetained(mqttClient, topics.path('light', deviceId, 'brightness'), brightness);
     }
 }
 
-function analyzeParkingAreaAndCarNumber(bytes, parkingState, mqttClient, saveState) {
-    let parkingArea, carNumber;
-
-    const toLetter = (byte) => byte >= 0xA0 && byte <= 0xDA
+function toLetter(byte) {
+    return byte >= 0xA0 && byte <= 0xDA
         ? String.fromCharCode(65 + (byte - 0xC1))
         : '';
+}
+
+function analyzeParkingAreaAndCarNumber(bytes, parkingState, mqttClient, options = {}) {
+    const { saveState, topics } = buildContext(options);
+    let parkingArea;
+    let carNumber;
 
     if (bytes[0] === 0x2A && bytes.length >= 10) {
-        // 입차 정보 없음
         if (bytes[4] === 0x80 && bytes[5] === 0x80) {
             parkingArea = '-';
             carNumber = '-';
         } else {
-            // 인덱스 4~10: parkingArea (7바이트 -> 문자열)
-            const segment1 = bytes.slice(4, 11);
-            parkingArea = segment1.map(toLetter).join('');
+            parkingArea = bytes.slice(4, 11).map(toLetter).join('');
         }
     }
 
     if (bytes[0] === 0x80 && bytes[1] !== 0x80 && bytes.length >= 10) {
-        const segment2 = bytes.slice(6, 10); // 인덱스 6~9
-        carNumber = segment2.map(toLetter).join('');
+        carNumber = bytes.slice(6, 10).map(toLetter).join('');
     }
 
-    if (parkingArea && !parkingState.parkingDiscovered) {
-        const parkingDiscoveryTopic = `homeassistant/sensor/parking_area/config`;
+    const needsParkingIconUpdate = parkingState.iconDiscoveryVersion !== PARKING_ICON_DISCOVERY_VERSION;
+
+    if (parkingArea && (!parkingState.parkingDiscovered || needsParkingIconUpdate)) {
         const parkingConfig = {
-            name: "주차 위치",
-            unique_id: "commax_parking_area",
-            state_topic: `${topicPrefix}/parking/area`,
-            availability_topic: `${topicPrefix}/parking/area/availability`,
+            name: '주차 위치',
+            unique_id: 'commax_parking_area',
+            state_topic: topics.path('parking', 'area'),
+            availability_topic: topics.availability('parking', 'area'),
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax",
-            }
+            icon: 'mdi:map-marker',
+            device: cloneDeviceInfo(),
         };
 
-        mqttClient.publish(parkingDiscoveryTopic, JSON.stringify(parkingConfig), {retain: true}, async (err) => {
-            if (err) {
-                logError('Failed to publish parking area discovery:', err);
-            } else {
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', 'parking_area'),
+            parkingConfig,
+            async () => {
                 parkingState.parkingDiscovered = true;
-                await saveState(parkingState);
-                mqttClient.publish(`${topicPrefix}/parking/area/availability`, 'available', { retain: true, qos: 1 });
-            }
-        });
+                parkingState.iconDiscoveryVersion = PARKING_ICON_DISCOVERY_VERSION;
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('parking', 'area'), 'available');
+            },
+            'Failed to publish parking area discovery:'
+        );
     }
 
-    if (carNumber && !parkingState.carNumberDiscovered) {
-        const carNumberDiscoveryTopic = `homeassistant/sensor/car_number/config`;
+    if (carNumber && (!parkingState.carNumberDiscovered || needsParkingIconUpdate)) {
         const carNumberConfig = {
-            name: "주차 차량",
-            unique_id: "commax_car_number",
-            state_topic: `${topicPrefix}/parking/car_number`,
-            availability_topic: `${topicPrefix}/parking/car_number/availability`,
+            name: '주차 차량',
+            unique_id: 'commax_car_number',
+            state_topic: topics.path('parking', 'car_number'),
+            availability_topic: topics.availability('parking', 'car_number'),
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax",
-            }
+            icon: 'mdi:car',
+            device: cloneDeviceInfo(),
         };
 
-        mqttClient.publish(carNumberDiscoveryTopic, JSON.stringify(carNumberConfig), {retain: true}, async (err) => {
-            if (err) {
-                logError('Failed to publish car number discovery:', err);
-            } else {
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', 'car_number'),
+            carNumberConfig,
+            async () => {
                 parkingState.carNumberDiscovered = true;
-                await saveState(parkingState);
-                mqttClient.publish(`${topicPrefix}/parking/car_number/availability`, 'available', { retain: true, qos: 1 });
-            }
-        });
+                parkingState.iconDiscoveryVersion = PARKING_ICON_DISCOVERY_VERSION;
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('parking', 'car_number'), 'available');
+            },
+            'Failed to publish car number discovery:'
+        );
     }
 
     if (parkingArea) {
         log(`주차위치 수신 : ${parkingArea}`);
-        mqttClient.publish(`${topicPrefix}/parking/area`, parkingArea, {retain: true});
+        publishRetained(mqttClient, topics.path('parking', 'area'), parkingArea);
     }
+
     if (carNumber) {
         log(`차량번호 수신 : ${carNumber}`);
-        mqttClient.publish(`${topicPrefix}/parking/car_number`, carNumber, {retain: true});
+        publishRetained(mqttClient, topics.path('parking', 'car_number'), carNumber);
     }
 }
 
 function parseTemperaturePacket(bytes) {
-    if (bytes.length !== 8 || ![0x82, 0x84].includes(bytes[0])) return null;
-    const deviceId = bytes[2];
-    const state = bytes[1] === 0x80 ? 'off' : bytes[1] === 0x81 ? 'idle' : bytes[1] === 0x83 ? 'heating' : 'unknown';
-    const currentTemp = bytes[3] === 0xFF ? null : bytes[3].toString(16).padStart(2, '0');
-    const targetTemp = bytes[4] === 0xFF ? null : bytes[4].toString(16).padStart(2, '0');
-    const checksum = bytes[7];
-
-    if (calculateChecksum(bytes.slice(0, 7)) !== checksum) {
-        // log('체크섬 오류 :', bytes.map(b => b.toString(16).padStart(2, '0')).join(' ').toUpperCase());
+    if (bytes.length !== 8 || ![0x82, 0x84].includes(bytes[0])) {
         return null;
     }
-    return {deviceId: deviceId.toString(16).padStart(2, '0'), state, currentTemp, targetTemp};
+
+    if (calculateChecksum(bytes.slice(0, 7)) !== bytes[7]) {
+        return null;
+    }
+
+    let state = 'unknown';
+    if (bytes[1] === 0x80) {
+        state = 'off';
+    } else if (bytes[1] === 0x81) {
+        state = 'idle';
+    } else if (bytes[1] === 0x83) {
+        state = 'heating';
+    }
+
+    return {
+        deviceId: byteToHex(bytes[2]),
+        state,
+        currentTemp: bytes[3] === 0xFF ? null : decodeBcdString([bytes[3]]),
+        targetTemp: bytes[4] === 0xFF ? null : decodeBcdString([bytes[4]]),
+    };
 }
 
-function analyzeAndDiscoverTemperature(bytes, discoveredTemps, mqttClient, saveState) {
+function analyzeAndDiscoverTemperature(bytes, discoveredTemps, mqttClient, options = {}) {
     const parsed = parseTemperaturePacket(bytes);
-    if (!parsed) return;
-    const {deviceId, state, currentTemp, targetTemp} = parsed;
+    if (!parsed) {
+        return;
+    }
+
+    const { saveState, topics } = buildContext(options);
+    const { deviceId, state, currentTemp, targetTemp } = parsed;
     const uniqueId = `commax_temp_${deviceId}`;
-    const topicPrefix = process.env.MQTT_TOPIC_PREFIX || 'devcommax';
+
     if (!discoveredTemps.has(uniqueId)) {
         const climateConfig = {
             name: `난방 ${deviceId}`,
             unique_id: uniqueId,
-            mode_cmd_t: `${topicPrefix}/temp/${deviceId}/set_mode`,
-            mode_stat_t: `${topicPrefix}/temp/${deviceId}/mode`,
-            curr_temp_t: `${topicPrefix}/temp/${deviceId}/current_temp`,
-            min_temp: "5",
-            max_temp: "30",
-            temp_cmd_t: `${topicPrefix}/temp/${deviceId}/set_temp`,
-            temp_stat_t: `${topicPrefix}/temp/${deviceId}/target_temp`,
-            availability_topic: `${topicPrefix}/temp/${deviceId}/availability`,
+            mode_cmd_t: topics.path('temp', deviceId, 'set_mode'),
+            mode_stat_t: topics.path('temp', deviceId, 'mode'),
+            curr_temp_t: topics.path('temp', deviceId, 'current_temp'),
+            min_temp: '5',
+            max_temp: '30',
+            temp_cmd_t: topics.path('temp', deviceId, 'set_temp'),
+            temp_stat_t: topics.path('temp', deviceId, 'target_temp'),
+            availability_topic: topics.availability('temp', deviceId),
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            modes: ["off", "heat"],
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax"
-            }
+            modes: ['off', 'heat'],
+            device: cloneDeviceInfo(),
         };
-        mqttClient.publish(`homeassistant/climate/${uniqueId}/config`, JSON.stringify(climateConfig), {retain: true}, async (err) => {
-            if (!err) {
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('climate', uniqueId),
+            climateConfig,
+            async () => {
                 discoveredTemps.add(uniqueId);
-                await saveState(state);
-                mqttClient.publish(`${topicPrefix}/temp/${deviceId}/availability`, 'available', { retain: true, qos: 1 });
-            }
-        });
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('temp', deviceId), 'available');
+            },
+            `Failed to publish temperature discovery for ${deviceId}:`
+        );
     }
-    const mode = state === 'off' ? 'off' : 'heat';
-    mqttClient.publish(`${topicPrefix}/temp/${deviceId}/mode`, mode, {retain: true});
+
+    publishRetained(mqttClient, topics.path('temp', deviceId, 'mode'), state === 'off' ? 'off' : 'heat');
+
     if (currentTemp !== null) {
-        mqttClient.publish(`${topicPrefix}/temp/${deviceId}/current_temp`, currentTemp.toString(), {retain: true});
+        publishRetained(mqttClient, topics.path('temp', deviceId, 'current_temp'), currentTemp);
     }
+
     if (targetTemp !== null) {
-        mqttClient.publish(`${topicPrefix}/temp/${deviceId}/target_temp`, targetTemp.toString(), {retain: true});
+        publishRetained(mqttClient, topics.path('temp', deviceId, 'target_temp'), targetTemp);
     }
 }
 
 function parseVentilationPacket(bytes) {
-    if (bytes.length !== 8 || ![0xF6, 0xF8].includes(bytes[0])) return null;
+    if (bytes.length !== 8 || ![0xF6, 0xF8].includes(bytes[0])) {
+        return null;
+    }
 
-    const mode = bytes[1]; // 0x00: 꺼짐, 0x01: 자동, 0x04: 수동, 0x07: 바이패스
-    const speed = bytes[3]; // 0x00: 꺼짐, 0x01: 약풍, 0x02: 중풍, 0x03: 강풍
-    const checksum = bytes[7];
+    if (calculateChecksum(bytes.slice(0, 7)) !== bytes[7]) {
+        return null;
+    }
 
-    if (calculateChecksum(bytes.slice(0, 7)) !== checksum) return null;
-
-    return {mode, speed};
+    return {
+        mode: bytes[1],
+        speed: bytes[3],
+    };
 }
 
-function analyzeAndDiscoverVentilation(bytes, discoveredFans, mqttClient, saveState) {
+function analyzeAndDiscoverVentilation(bytes, discoveredFans, mqttClient, options = {}) {
     const parsed = parseVentilationPacket(bytes);
-    if (!parsed) return;
+    if (!parsed) {
+        return;
+    }
 
-    const {mode, speed} = parsed;
-    const deviceId = "01"; // 디바이스 ID가 없으므로 고정값 사용 (필요 시 수정)
+    const { saveState, topics } = buildContext(options);
+    const { mode, speed } = parsed;
+    const deviceId = '01';
     const uniqueId = `commax_fan_${deviceId}`;
-    const topicPrefix = process.env.MQTT_TOPIC_PREFIX || 'devcommax';
 
     if (!discoveredFans.has(uniqueId)) {
         const fanConfig = {
-            name: `환기`,
+            name: '환기',
             unique_id: uniqueId,
-            command_topic: `${topicPrefix}/fan/${deviceId}/set`,
-            state_topic: `${topicPrefix}/fan/${deviceId}/state`,
-            availability_topic: `${topicPrefix}/fan/${deviceId}/availability`,
+            command_topic: topics.path('fan', deviceId, 'set'),
+            state_topic: topics.path('fan', deviceId, 'state'),
+            availability_topic: topics.availability('fan', deviceId),
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            percentage_command_topic: `${topicPrefix}/fan/${deviceId}/set_speed`,
-            percentage_state_topic: `${topicPrefix}/fan/${deviceId}/speed`,
-            preset_mode_command_topic: `${topicPrefix}/fan/${deviceId}/set_mode`,
-            preset_mode_state_topic: `${topicPrefix}/fan/${deviceId}/mode`,
-            preset_modes: ["auto", "manual", "bypass"],
+            percentage_command_topic: topics.path('fan', deviceId, 'set_speed'),
+            percentage_state_topic: topics.path('fan', deviceId, 'speed'),
+            preset_mode_command_topic: topics.path('fan', deviceId, 'set_mode'),
+            preset_mode_state_topic: topics.path('fan', deviceId, 'mode'),
+            preset_modes: ['auto', 'manual', 'bypass'],
             speed_range_min: 1,
             speed_range_max: 3,
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax"
-            }
+            device: cloneDeviceInfo(),
         };
 
-        mqttClient.publish(`homeassistant/fan/${uniqueId}/config`, JSON.stringify(fanConfig), {retain: true}, async (err) => {
-            if (!err) {
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('fan', uniqueId),
+            fanConfig,
+            async () => {
                 discoveredFans.add(uniqueId);
-                await saveState(discoveredFans);
-                mqttClient.publish(`${topicPrefix}/fan/${deviceId}/availability`, 'available', { retain: true, qos: 1 });
-            }
-        });
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('fan', deviceId), 'available');
+            },
+            'Failed to publish ventilation discovery:'
+        );
     }
 
     const state = mode === 0x00 ? 'OFF' : 'ON';
     const modeStr = mode === 0x01 ? 'auto' : mode === 0x07 ? 'bypass' : 'manual';
-    const speedVal = speed === 0x01 ? "1" : speed === 0x02 ? "2" : speed === 0x03 ? "3" : "1"; // 1: 약풍, 2: 중풍, 3: 강풍
+    const speedStr = speed === 0x01 ? '1' : speed === 0x02 ? '2' : speed === 0x03 ? '3' : '1';
 
-    mqttClient.publish(`${topicPrefix}/fan/${deviceId}/state`, state, {retain: true});
-    mqttClient.publish(`${topicPrefix}/fan/${deviceId}/mode`, modeStr, {retain: true});
-    mqttClient.publish(`${topicPrefix}/fan/${deviceId}/speed`, speedVal, {retain: true});
+    publishRetained(mqttClient, topics.path('fan', deviceId, 'state'), state);
+    publishRetained(mqttClient, topics.path('fan', deviceId, 'mode'), modeStr);
+    publishRetained(mqttClient, topics.path('fan', deviceId, 'speed'), speedStr);
 }
 
-// 엘레베이터는 내부망 SOAP 통신으로 대체함
-// function parseElevatorPacket(bytes) {
-//     if (bytes.length !== 8 || ![0x26, 0xA2].includes(bytes[0])) return null;
-//
-//     const header = bytes[0];
-//     const deviceId = bytes[1]; // 0x01
-//     const state = bytes[3]; // 0x00: 완료, 0x42: 호출 중
-//     const checksum = bytes[7];
-//
-//     if (calculateChecksum(bytes.slice(0, 7)) !== checksum) return null;
-//
-//     return {header, deviceId, state};
-// }
-
-function analyzeAndDiscoverElevator(bytes, discoveredElevators, mqttClient, saveState) {
-    // const parsed = parseElevatorPacket(bytes);
-    // if (!parsed) return;
-    // const { header, deviceId, state: elevatorState } = parsed;
-
-    const elevatorId = "01"; // 디바이스 ID가 없으므로 고정값 사용
+function analyzeAndDiscoverElevator(bytes, discoveredElevators, mqttClient, options = {}) {
+    const { saveState, topics } = buildContext(options);
+    const elevatorId = '01';
     const uniqueId = `commax_elevator_${elevatorId}`;
-    const topicPrefix = process.env.MQTT_TOPIC_PREFIX || 'devcommax';
 
     if (!discoveredElevators.has(uniqueId)) {
-        mqttClient.publish(`${topicPrefix}/elevator/${elevatorId}/status`, "OFF", { retain: true });
+        publishRetained(mqttClient, topics.path('elevator', elevatorId, 'status'), 'OFF');
 
         const switchConfig = {
-            name: `엘레베이터`,
+            name: '엘레베이터',
             unique_id: `${uniqueId}_switch`,
-            command_topic: `${topicPrefix}/elevator/${elevatorId}/set`,
-            state_topic: `${topicPrefix}/elevator/${elevatorId}/status`,
-            availability_topic: `${topicPrefix}/elevator/${elevatorId}/availability`,
+            command_topic: topics.path('elevator', elevatorId, 'set'),
+            state_topic: topics.path('elevator', elevatorId, 'status'),
+            availability_topic: topics.availability('elevator', elevatorId),
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax"
-            }
+            device: cloneDeviceInfo(),
         };
 
-        mqttClient.publish(`homeassistant/switch/${uniqueId}_switch/config`, JSON.stringify(switchConfig), { retain: true }, async (err) => {
-            if (!err) {
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('switch', `${uniqueId}_switch`),
+            switchConfig,
+            async () => {
                 discoveredElevators.add(uniqueId);
-                await saveState(discoveredElevators);
-                mqttClient.publish(`${topicPrefix}/elevator/${elevatorId}/availability`, 'available', { retain: true, qos: 1 });
-            }
-        });
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('elevator', elevatorId), 'available');
+            },
+            'Failed to publish elevator discovery:'
+        );
     }
 
-    // 상태 퍼블리싱 - 내부망 SOAP 통신으로 대체함
-    // if (header === 0xA2) {
-    //     // ACK: 엘레베이터 호출 시작
-    //     log(`Elevator ${elevatorId}: Calling...`);
-    //     mqttClient.publish(`${topicPrefix}/elevator/${elevatorId}/status`, "ON", { retain: true });
-    // } else if (header === 0x26) {
-    //     if (elevatorState === 0x42) {
-    //         // 엘레베이터 호출 중 (필요 시 추가 로깅)
-    //         log(`Elevator ${elevatorId}: Calling...`);
-    //         mqttClient.publish(`${topicPrefix}/elevator/${elevatorId}/status`, "ON", { retain: true });
-    //     } else if (elevatorState === 0x00) {
-    //         // 호출 완료
-    //         log(`Elevator ${elevatorId}: Call completed`);
-    //         mqttClient.publish(`${topicPrefix}/elevator/${elevatorId}/status`, "OFF", { retain: true });
-    //     }
-    // }
+    void bytes;
 }
 
 function parseMasterLightPacket(bytes) {
-    if (bytes.length !== 8 || ![0xA0, 0xA2].includes(bytes[0])) return null;
+    if (bytes.length !== 8 || ![0xA0, 0xA2].includes(bytes[0])) {
+        return null;
+    }
 
-    // 엘레베이터 패킷과 헤더가 같아서 추가 처리 함
-    if(bytes[4] === 0x28 && bytes[5] === 0xD7) return null;
+    if (bytes[4] === 0x28 && bytes[5] === 0xD7) {
+        return null;
+    }
 
-    const header = bytes[0];
-    const deviceId = bytes[2]; // 0x01
-    const state = bytes[1]; // 0x00: OFF, 0x01: ON
-    const checksum = bytes[7];
+    if (calculateChecksum(bytes.slice(0, 7)) !== bytes[7]) {
+        return null;
+    }
 
-    if (calculateChecksum(bytes.slice(0, 7)) !== checksum) return null;
-
-    return { header, deviceId, state };
+    return {
+        deviceId: byteToHex(bytes[2]),
+        state: bytes[1],
+    };
 }
 
-function analyzeAndDiscoverMasterLight(bytes, discoveredMasterLights, mqttClient, saveState) {
+function analyzeAndDiscoverMasterLight(bytes, discoveredMasterLights, mqttClient, options = {}) {
     const parsed = parseMasterLightPacket(bytes);
-    if (!parsed) return;
+    if (!parsed) {
+        return;
+    }
 
-    const { header, deviceId, state } = parsed;
-    const masterLightId = "01"; // 디바이스 ID 고정
-    const uniqueId = `commax_master_light_${masterLightId}`;
-    const topicPrefix = process.env.MQTT_TOPIC_PREFIX || 'devcommax';
+    const { saveState, topics } = buildContext(options);
+    const uniqueId = 'commax_master_light_01';
 
     if (!discoveredMasterLights.has(uniqueId)) {
         const switchConfig = {
-            name: `일괄소등`,
+            name: '일괄소등',
             unique_id: uniqueId,
-            command_topic: `${topicPrefix}/master_light/set`,
-            state_topic: `${topicPrefix}/master_light/state`,
-            availability_topic: `${topicPrefix}/master_light/availability`,
+            command_topic: topics.path('master_light', 'set'),
+            state_topic: topics.path('master_light', 'state'),
+            availability_topic: topics.availability('master_light'),
             payload_available: 'available',
             payload_not_available: 'unavailable',
-            device: {
-                identifiers: ["Commax"],
-                name: "월패드",
-                manufacturer: "Commax"
-            }
+            device: cloneDeviceInfo(),
         };
 
-        mqttClient.publish(`homeassistant/switch/${uniqueId}/config`, JSON.stringify(switchConfig), { retain: true }, async (err) => {
-            if (!err) {
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('switch', uniqueId),
+            switchConfig,
+            async () => {
                 discoveredMasterLights.add(uniqueId);
-                await saveState(discoveredMasterLights);
-                mqttClient.publish(`${topicPrefix}/master_light/availability`, 'available', { retain: true, qos: 1 });
-            }
-        });
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('master_light'), 'available');
+            },
+            'Failed to publish master light discovery:'
+        );
     }
 
-    // 상태 퍼블리싱 (A0 패킷)
-    const stateStr = state === 0x01 ? "ON" : "OFF";
-    mqttClient.publish(`${topicPrefix}/master_light/state`, stateStr, { retain: true });
+    publishRetained(mqttClient, topics.path('master_light', 'state'), parsed.state === 0x01 ? 'ON' : 'OFF');
 }
 
-function analyzeAndDiscoverAirQuality(bytes, discoveredSensors, mqttClient, saveState) {
-    if (bytes[0] !== 0xC8) return;
+function analyzeAndDiscoverAirQuality(bytes, discoveredSensors, mqttClient, options = {}) {
+    if (!bytes || bytes.length < 7 || bytes[0] !== 0xC8) {
+        return false;
+    }
 
-    const deviceId = bytes[1];
-    const topicPrefix = process.env.MQTT_TOPIC_PREFIX || 'devcommax';
+    const { saveState, topics } = buildContext(options);
+    const co2Value = decodeBcdNumber([bytes[3], bytes[4]]);
+    const particleValue = decodeBcdString([bytes[6]]);
 
-    // CO2 값 추출 (4-5자리 결합)
-    const co2Value = parseInt(`${bytes[3].toString(16).padStart(2, '0')}${bytes[4].toString(16).padStart(2, '0')}`);
-
-    // PM2.5 또는 PM10 값 추출 (7자리, 16진수 값을 문자열로 유지)
-    const particleValue = bytes[6].toString(16).padStart(2, '0'); // 예: 0x12 → "12"
-
-    // 센서 ID 설정
-    const uniqueId = 'commax_air_quality';
-    const sensors = [
-        {
-            id: 'co2',
-            name: '이산화탄소',
-            unique_id: 'commax_co2',
-            state_topic: `${topicPrefix}/air_quality/co2/state`,
-            availability_topic: `${topicPrefix}/air_quality/co2/availability`,
-            unit_of_measurement: 'ppm',
-            device_class: 'carbon_dioxide',
-            precision: 0,
-        },
-        {
-            id: 'pm2_5',
-            name: '초미세먼지(PM2.5)',
-            unique_id: 'commax_pm2_5',
-            state_topic: `${topicPrefix}/air_quality/pm2_5/state`,
-            availability_topic: `${topicPrefix}/air_quality/pm2_5/availability`,
-            unit_of_measurement: 'µg/m³',
-            device_class: 'pm25',
-            precision: 0,
-        },
-        {
-            id: 'pm10',
-            name: '미세먼지(PM10)',
-            unique_id: 'commax_pm10',
-            state_topic: `${topicPrefix}/air_quality/pm10/state`,
-            availability_topic: `${topicPrefix}/air_quality/pm10/availability`,
-            unit_of_measurement: 'µg/m³',
-            device_class: 'pm10',
-            precision: 0,
-        },
-    ];
-
-    if (!discoveredSensors.has(uniqueId)) {
-        sensors.forEach(sensor => {
-            const sensorConfig = {
+    if (!discoveredSensors.has(AIR_QUALITY_DISCOVERY_ID) || !discoveredSensors.has(AIR_QUALITY_ICON_DISCOVERY_ID)) {
+        AIR_QUALITY_SENSORS.forEach((sensor) => {
+            const sensorConfig = applyIcon({
                 name: sensor.name,
-                unique_id: sensor.unique_id,
-                state_topic: sensor.state_topic,
-                availability_topic: sensor.availability_topic,
+                unique_id: sensor.uniqueId,
+                state_topic: topics.path('air_quality', sensor.id, 'state'),
+                availability_topic: topics.availability('air_quality', sensor.id),
                 payload_available: 'available',
                 payload_not_available: 'unavailable',
-                unit_of_measurement: sensor.unit_of_measurement,
-                device_class: sensor.device_class,
-                device: {
-                    identifiers: ["Commax"],
-                    name: "월패드",
-                    manufacturer: "Commax"
-                }
-            };
+                unit_of_measurement: sensor.unit,
+                device_class: sensor.deviceClass,
+                device: cloneDeviceInfo(),
+            }, sensor);
 
-            mqttClient.publish(
-                `homeassistant/sensor/${sensor.unique_id}/config`,
-                JSON.stringify(sensorConfig),
-                { retain: true },
-                (err) => {
-                    if (!err) {
-                        discoveredSensors.add(uniqueId);
-                        saveState(discoveredSensors);
-                        mqttClient.publish(sensor.availability_topic, 'available', { retain: true, qos: 1 });
+            publishDiscovery(
+                mqttClient,
+                topics.discovery('sensor', sensor.uniqueId),
+                sensorConfig,
+                async () => {
+                    if (!discoveredSensors.has(AIR_QUALITY_DISCOVERY_ID) || !discoveredSensors.has(AIR_QUALITY_ICON_DISCOVERY_ID)) {
+                        discoveredSensors.add(AIR_QUALITY_DISCOVERY_ID);
+                        discoveredSensors.add(AIR_QUALITY_ICON_DISCOVERY_ID);
+                        await saveState();
                     }
-                }
+
+                    publishAvailability(mqttClient, topics.availability('air_quality', sensor.id), 'available');
+                },
+                `Failed to publish ${sensor.id} discovery:`
             );
         });
     }
 
-    // 상태 업데이트
-    // CO2는 모든 패킷에 포함
-    mqttClient.publish(`${topicPrefix}/air_quality/co2/state`, co2Value.toString(), { retain: true });
+    publishRetained(mqttClient, topics.path('air_quality', 'co2', 'state'), co2Value);
 
-    // DeviceID 뒷자리에 따라 PM2.5 또는 PM10 퍼블리싱
-    const deviceIdLastDigit = deviceId & 0x0F; // 하위 4비트 (뒷자리)
-    if (deviceIdLastDigit === 1) {
-        // PM2.5
-        mqttClient.publish(`${topicPrefix}/air_quality/pm2_5/state`, particleValue, { retain: true });
+    if ((bytes[1] & 0x0F) === 1) {
+        publishRetained(mqttClient, topics.path('air_quality', 'pm2_5', 'state'), particleValue);
     } else {
-        // PM10
-        mqttClient.publish(`${topicPrefix}/air_quality/pm10/state`, particleValue, { retain: true });
+        publishRetained(mqttClient, topics.path('air_quality', 'pm10', 'state'), particleValue);
     }
+
+    return true;
 }
 
-function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, saveState) {
+function isMeteringPacket(bytes) {
+    return bytes
+        && bytes.length === 32
+        && bytes[0] === 0xF7
+        && bytes[1] === 0x30
+        && bytes[3] === 0x81;
+}
 
-    if (bytes[0] !== 0xF7 || bytes[1] !== 0x30 || bytes.length !== 32) return;
-    if (bytes[3] !== 0x81) return;
+function getMonthlyMeteringPeriod(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    return `${year}-${month}`;
+}
 
-        const water = parseInt(bytes[5].toString(16).padStart(2, '0') + bytes[6].toString(16).padStart(2, '0'),10);
-        const accWater = parseInt(bytes[8].toString(16).padStart(2, '0') + bytes[9].toString(16).padStart(2, '0'),10) / 10;
+function roundMeteringValue(value) {
+    return Math.round(value * 1000) / 1000;
+}
 
-        const warm = parseInt(bytes[20].toString(16).padStart(2, '0') + bytes[21].toString(16).padStart(2, '0'),10);
-        const accWarm = parseInt(bytes[23].toString(16).padStart(2, '0') + bytes[24].toString(16).padStart(2, '0'),10) / 10;
-
-        const electric = parseInt(bytes[15].toString(16).padStart(2, '0') + bytes[16].toString(16).padStart(2, '0'),10);
-        const accElectric = parseInt(bytes[17].toString(16).padStart(2, '0') + bytes[18].toString(16).padStart(2, '0')+ bytes[19].toString(16).padStart(2, '0'),10) / 10;
-
-        const heat = parseInt(bytes[25].toString(16).padStart(2, '0') + bytes[26].toString(16).padStart(2, '0'),10) / 10;
-        const accHeat = parseInt(bytes[28].toString(16).padStart(2, '0') + bytes[29].toString(16).padStart(2, '0'),10) / 100;
-
-        const gas      	= parseInt(bytes[10].toString(16).padStart(2, '0') + bytes[11].toString(16).padStart(2, '0'),10);
-        const accGas 	= parseInt(bytes[13].toString(16).padStart(2, '0') + bytes[14].toString(16).padStart(2, '0'),10) / 10;
-
-        // log(`실시간 전력 : ${electric} / 실시간 수도 : ${water} / 실시간 온수 : ${warm} / 실시간 난방 : ${heat}`);
-        // log(`누적 전력 : ${accElectric} / 누적 수도 : ${accWater} / 누적 온수 : ${accWarm} / 누적 난방 : ${accHeat}`);
-
-        // 센서 ID 설정
-        const uniqueId = 'commax_metering';
-        const sensors = [
-            {
-                id: 'water_meter',
-                name: '실시간 수도 사용량',
-                unique_id: 'commax_water_meter',
-                state_topic: `${topicPrefix}/smart_metering/water_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/water_meter/availability`,
-                unit_of_measurement: 'm³/h',
-                device_class: 'water',
-                precision: 1,
-            },
-            {
-                id: 'electric_meter',
-                name: '실시간 전기 사용량',
-                unique_id: 'commax_electric_meter',
-                state_topic: `${topicPrefix}/smart_metering/electric_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/electric_meter/availability`,
-                unit_of_measurement: 'W',
-                device_class: 'power',
-                precision: 1,
-            },
-            {
-                id: 'warm_meter',
-                name: '실시간 온수 사용량',
-                unique_id: 'commax_warm_meter',
-                state_topic: `${topicPrefix}/smart_metering/warm_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/warm_meter/availability`,
-                unit_of_measurement: 'm³/h',
-                device_class: 'water',
-                precision: 1,
-            },
-            {
-                id: 'heat_meter',
-                name: '실시간 난방 사용량',
-                unique_id: 'commax_heat_meter',
-                state_topic: `${topicPrefix}/smart_metering/heat_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/heat_meter/availability`,
-                unit_of_measurement: 'kW',
-                device_class: 'power',
-                precision: 1,
-            },
-            {
-                id: 'gas_meter',
-                name: '실시간 가스 사용량',
-                unique_id: 'commax_gas_meter',
-                state_topic: `${topicPrefix}/smart_metering/gas_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/gas_meter/availability`,
-                unit_of_measurement: 'm³/h',
-                device_class: 'water',
-                precision: 1,
-            },
-            {
-                id: 'water_acc_meter',
-                name: '누적 수도 사용량',
-                unique_id: 'commax_water_acc_meter',
-                state_topic: `${topicPrefix}/smart_metering/water_acc_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/water_acc_meter/availability`,
-                unit_of_measurement: 'm³',
-                device_class: 'water',
-                precision: 1,
-            },
-            {
-                id: 'electric_acc_meter',
-                name: '누적 전기 사용량',
-                unique_id: 'commax_electric_acc_meter',
-                state_topic: `${topicPrefix}/smart_metering/electric_acc_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/electric_acc_meter/availability`,
-                unit_of_measurement: 'kWh',
-                device_class: 'energy',
-                precision: 1,
-            },
-            {
-                id: 'warm_acc_meter',
-                name: '누적 온수 사용량',
-                unique_id: 'commax_warm_acc_meter',
-                state_topic: `${topicPrefix}/smart_metering/warm_acc_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/warm_acc_meter/availability`,
-                unit_of_measurement: 'm³',
-                device_class: 'water',
-                precision: 1,
-            },
-            {
-                id: 'heat_acc_meter',
-                name: '누적 난방 사용량',
-                unique_id: 'commax_heat_acc_meter',
-                state_topic: `${topicPrefix}/smart_metering/heat_acc_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/heat_acc_meter/availability`,
-                unit_of_measurement: 'm³',
-                device_class: 'water',
-                precision: 1,
-            },
-            {
-                id: 'gas_acc_meter',
-                name: '누적 가스 사용량',
-                unique_id: 'commax_gas_acc_meter',
-                state_topic: `${topicPrefix}/smart_metering/gas_acc_meter/state`,
-                availability_topic: `${topicPrefix}/smart_metering/gas_acc_meter/availability`,
-                unit_of_measurement: 'm³',
-                device_class: 'water',
-                precision: 1,
-            },
-        ];
-
-        if (!discoveredMeters.has(uniqueId)) {
-            sensors.forEach(sensor => {
-                const sensorConfig = {
-                    name: sensor.name,
-                    unique_id: sensor.unique_id,
-                    state_topic: sensor.state_topic,
-                    availability_topic: sensor.availability_topic,
-                    payload_available: 'available',
-                    payload_not_available: 'unavailable',
-                    unit_of_measurement: sensor.unit_of_measurement,
-                    device_class: sensor.device_class,
-                    device: {
-                        identifiers: ["Commax"],
-                        name: "월패드",
-                        manufacturer: "Commax"
-                    }
-                };
-                mqttClient.publish(
-                  `homeassistant/sensor/${sensor.unique_id}/config`,
-                  JSON.stringify(sensorConfig),
-                  { retain: true },
-                  (err) => {
-                      if (!err) {
-                          discoveredMeters.add(uniqueId);
-                          saveState(discoveredMeters);
-                          mqttClient.publish(sensor.availability_topic, 'available', { retain: true, qos: 1 });
-                      }
-                  }
-                );
-            });
-        }
-
-        mqttClient.publish(`${topicPrefix}/smart_metering/water_meter/state`, water.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/water_acc_meter/state`, accWater.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/electric_meter/state`, electric.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/electric_acc_meter/state`, accElectric.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/warm_meter/state`, warm.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/warm_acc_meter/state`, accWarm.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/heat_meter/state`, heat.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/heat_acc_meter/state`, accHeat.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/gas_meter/state`, gas.toString(), { retain: true });
-        mqttClient.publish(`${topicPrefix}/smart_metering/gas_acc_meter/state`, accGas.toString(), { retain: true });
+function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, values) {
+    if (!usageConfig || usageConfig.period !== period) {
+        return false;
     }
 
+    let changed = false;
+
+    Object.entries(usageConfig.values || {}).forEach(([sourceId, usage]) => {
+        if (usage === undefined || values[sourceId] === undefined) {
+            return;
+        }
+
+        const baseline = roundMeteringValue(values[sourceId] - usage);
+
+        if (monthlyMeteringState.baselines[sourceId] !== baseline) {
+            monthlyMeteringState.baselines[sourceId] = baseline;
+            changed = true;
+        }
+    });
+
+    return changed;
+}
+
+function calculateMonthlyMeteringValues(values, monthlyMeteringState, date = new Date(), usageConfig = null) {
+    if (!monthlyMeteringState) {
+        return { changed: false, values: {} };
+    }
+
+    const period = getMonthlyMeteringPeriod(date);
+    let changed = false;
+
+    if (monthlyMeteringState.period !== period) {
+        monthlyMeteringState.period = period;
+        monthlyMeteringState.baselines = {};
+        changed = true;
+    }
+
+    if (applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, values)) {
+        changed = true;
+    }
+
+    const monthlyValues = {};
+
+    MONTHLY_METERING_SENSORS.forEach((sensor) => {
+        const currentValue = values[sensor.sourceId];
+        const baseline = monthlyMeteringState.baselines[sensor.sourceId];
+
+        if (baseline === undefined || currentValue < baseline) {
+            monthlyMeteringState.baselines[sensor.sourceId] = currentValue;
+            monthlyValues[sensor.id] = 0;
+            changed = true;
+            return;
+        }
+
+        monthlyValues[sensor.id] = roundMeteringValue(currentValue - baseline);
+    });
+
+    return { changed, values: monthlyValues };
+}
+
+function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, options = {}) {
+    if (!isMeteringPacket(bytes)) {
+        return false;
+    }
+
+    const { monthlyMeteringState, monthlyUsageConfig, saveState, topics } = buildContext(options);
+    const values = {
+        water_meter: decodeBcdNumber([bytes[5], bytes[6]]),
+        water_acc_meter: decodeBcdNumber([bytes[8], bytes[9]]) / 10,
+        gas_meter: decodeBcdNumber([bytes[10], bytes[11]]),
+        gas_acc_meter: decodeBcdNumber([bytes[13], bytes[14]]) / 10,
+        electric_meter: decodeBcdNumber([bytes[15], bytes[16]]),
+        electric_acc_meter: decodeBcdNumber([bytes[17], bytes[18], bytes[19]]) / 10,
+        warm_meter: decodeBcdNumber([bytes[20], bytes[21]]),
+        warm_acc_meter: decodeBcdNumber([bytes[23], bytes[24]]) / 10,
+        heat_meter: decodeBcdNumber([bytes[25], bytes[26]]) / 10,
+        heat_acc_meter: decodeBcdNumber([bytes[28], bytes[29]]) / 100,
+    };
+
+    const monthlyResult = calculateMonthlyMeteringValues(values, monthlyMeteringState, new Date(), monthlyUsageConfig);
+
+    if (!discoveredMeters.has(METERING_DISCOVERY_ID) || !discoveredMeters.has(METERING_ICON_DISCOVERY_ID)) {
+        METERING_SENSORS.forEach((sensor) => {
+            const sensorConfig = applyIcon({
+                name: sensor.name,
+                unique_id: sensor.uniqueId,
+                state_topic: topics.path('smart_metering', sensor.id, 'state'),
+                availability_topic: topics.availability('smart_metering', sensor.id),
+                payload_available: 'available',
+                payload_not_available: 'unavailable',
+                unit_of_measurement: sensor.unit,
+                device_class: sensor.deviceClass,
+                device: cloneDeviceInfo(),
+            }, sensor);
+
+            publishDiscovery(
+                mqttClient,
+                topics.discovery('sensor', sensor.uniqueId),
+                sensorConfig,
+                async () => {
+                    if (!discoveredMeters.has(METERING_DISCOVERY_ID) || !discoveredMeters.has(METERING_ICON_DISCOVERY_ID)) {
+                        discoveredMeters.add(METERING_DISCOVERY_ID);
+                        discoveredMeters.add(METERING_ICON_DISCOVERY_ID);
+                        await saveState();
+                    }
+
+                    publishAvailability(mqttClient, topics.availability('smart_metering', sensor.id), 'available');
+                },
+                `Failed to publish ${sensor.id} discovery:`
+            );
+        });
+    }
+
+    if (!discoveredMeters.has(MONTHLY_METERING_DISCOVERY_ID) || !discoveredMeters.has(MONTHLY_METERING_ICON_DISCOVERY_ID)) {
+        MONTHLY_METERING_SENSORS.forEach((sensor) => {
+            const sensorConfig = applyIcon({
+                name: sensor.name,
+                unique_id: sensor.uniqueId,
+                state_topic: topics.path('smart_metering', sensor.id, 'state'),
+                availability_topic: topics.availability('smart_metering', sensor.id),
+                payload_available: 'available',
+                payload_not_available: 'unavailable',
+                unit_of_measurement: sensor.unit,
+                device_class: sensor.deviceClass,
+                state_class: 'total_increasing',
+                device: cloneDeviceInfo(),
+            }, sensor);
+
+            publishDiscovery(
+                mqttClient,
+                topics.discovery('sensor', sensor.uniqueId),
+                sensorConfig,
+                async () => {
+                    if (!discoveredMeters.has(MONTHLY_METERING_DISCOVERY_ID) || !discoveredMeters.has(MONTHLY_METERING_ICON_DISCOVERY_ID)) {
+                        discoveredMeters.add(MONTHLY_METERING_DISCOVERY_ID);
+                        discoveredMeters.add(MONTHLY_METERING_ICON_DISCOVERY_ID);
+                        await saveState();
+                    }
+
+                    publishAvailability(mqttClient, topics.availability('smart_metering', sensor.id), 'available');
+                },
+                `Failed to publish ${sensor.id} discovery:`
+            );
+        });
+    }
+
+    Object.entries(values).forEach(([sensorId, value]) => {
+        publishRetained(mqttClient, topics.path('smart_metering', sensorId, 'state'), value);
+    });
+
+    Object.entries(monthlyResult.values).forEach(([sensorId, value]) => {
+        publishRetained(mqttClient, topics.path('smart_metering', sensorId, 'state'), value);
+    });
+
+    if (monthlyResult.changed) {
+        void saveState();
+    }
+
+    return true;
+}
 
 module.exports = {
-    analyzeAndDiscoverOutlet,
+    AIR_QUALITY_SENSORS,
+    METERING_SENSORS,
+    MONTHLY_METERING_SENSORS,
+    WALLPAD_DEVICE,
+    analyzeAndDiscoverAirQuality,
+    analyzeAndDiscoverElevator,
     analyzeAndDiscoverLight,
-    analyzeParkingAreaAndCarNumber,
+    analyzeAndDiscoverMasterLight,
+    analyzeAndDiscoverMetering,
+    analyzeAndDiscoverOutlet,
     analyzeAndDiscoverTemperature,
     analyzeAndDiscoverVentilation,
-    analyzeAndDiscoverElevator,
-    analyzeAndDiscoverMasterLight,
-    analyzeAndDiscoverAirQuality,
-    analyzeAndDiscoverMetering,
-    calculateChecksum
+    analyzeParkingAreaAndCarNumber,
+    calculateChecksum,
+    applyConfiguredMonthlyUsage,
+    calculateMonthlyMeteringValues,
+    getMonthlyMeteringPeriod,
+    isMeteringPacket,
+    parseMasterLightPacket,
+    parseOutletPacket,
+    parseTemperaturePacket,
+    parseVentilationPacket,
 };

@@ -1,187 +1,522 @@
 const { log, logError } = require('./utils');
 const PriorityQueue = require('./priorityQueue');
 const { calculateChecksum } = require('./deviceParser');
-const topicPrefix = process.env.MQTT_TOPIC_PREFIX || 'devcommax';
+
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_RETRY_TIMEOUT_MS = 400;
+const SUPPORTED_TOPIC_ACTIONS = new Set(['set', 'call', 'set_mode', 'set_temp', 'set_speed']);
+const DEVICE_ID_PREFIX_PATTERN = /^(outlet_|light_|temp_)/;
+const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+
+function shouldLogMqttCommands(env = process.env) {
+    return TRUE_VALUES.has(String(env.COMMAX_LOG_MQTT_COMMANDS || '').toLowerCase());
+}
+
+function parsePositiveInteger(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readRetryConfig(env = process.env) {
+    return {
+        maxRetries: parsePositiveInteger(env.COMMAX_MAX_RETRIES, DEFAULT_MAX_RETRIES),
+        retryTimeoutMs: parsePositiveInteger(env.COMMAX_RETRY_TIMEOUT_MS, DEFAULT_RETRY_TIMEOUT_MS),
+    };
+}
+
+function formatHex(bufferOrBytes) {
+    return [...bufferOrBytes]
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join(' ')
+        .toUpperCase();
+}
+
+function encodeDecimalDigitsToByte(value) {
+    return Number.parseInt(String(value), 16);
+}
+
+function decodeBcdNumber(bytes) {
+    return Number.parseInt(
+        bytes.map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+        10
+    );
+}
+
+function byteToHex(byte) {
+    return byte.toString(16).padStart(2, '0');
+}
+
+function formatWithDescription(bytes, description) {
+    const hex = formatHex(bytes);
+    return description ? `${hex} (${description})` : hex;
+}
+
+function describeOutletState(stateByte) {
+    const power = (stateByte & 0x01) === 1 ? 'ON' : 'OFF';
+    const mode = (stateByte & 0x10) === 0x10 ? 'AUTO' : 'MANUAL';
+    return `${power} ${mode}`;
+}
+
+function describeFanMode(modeByte) {
+    switch (modeByte) {
+        case 0x00:
+            return 'OFF';
+        case 0x01:
+        case 0x02:
+            return 'AUTO';
+        case 0x04:
+            return 'ON';
+        case 0x07:
+            return 'BYPASS';
+        default:
+            return `모드 ${byteToHex(modeByte)}`;
+    }
+}
+
+function describeCommand(command) {
+    const deviceId = byteToHex(command[1]);
+
+    switch (command[0]) {
+        case 0x7A:
+            if (command[2] === 0x01) {
+                return `대기전력 ${deviceId} 전원 ${command[3] ? 'ON' : 'OFF'}`;
+            }
+            if (command[2] === 0x02) {
+                return `대기전력 ${deviceId} 모드 ${command[3] ? 'AUTO' : 'MANUAL'}`;
+            }
+            if (command[2] === 0x03) {
+                return `대기전력 ${deviceId} 차단값 ${command[4]}W`;
+            }
+            return `대기전력 ${deviceId} 명령 ${byteToHex(command[2])}`;
+        case 0x31:
+            if (command[2] === 0x03) {
+                return `조명 ${deviceId} 밝기 ${command[6]}`;
+            }
+            return `조명 ${deviceId} 전원 ${command[2] ? 'ON' : 'OFF'}`;
+        case 0x04:
+            if (command[2] === 0x03) {
+                return `난방 ${deviceId} 목표온도 ${byteToHex(command[3])}`;
+            }
+            if (command[2] === 0x04) {
+                return `난방 ${deviceId} 모드 ${command[3] === 0x00 ? 'OFF' : 'HEAT'}`;
+            }
+            return `난방 ${deviceId} 명령 ${byteToHex(command[2])}`;
+        case 0x78:
+            if (command[2] === 0x02) {
+                return `환기 ${deviceId} 풍량 ${command[3]}`;
+            }
+            return `환기 ${deviceId} ${describeFanMode(command[3])}`;
+        case 0x22:
+            return `일괄소등 전원 ${command[2] ? 'ON' : 'OFF'}`;
+        case 0xA0:
+            return `엘리베이터 ${deviceId} 호출`;
+        default:
+            return '';
+    }
+}
+
+function describeStateFrame(bytes) {
+    switch (bytes[0]) {
+        case 0xF9:
+        case 0xFA:
+            return `대기전력 ${byteToHex(bytes[2])} 상태 ${describeOutletState(bytes[1])} 전력 ${decodeBcdNumber([bytes[5], bytes[6]])}W`;
+        case 0xB0:
+        case 0xB1:
+            return bytes[1] !== 0x00 && bytes[6] === 0x05
+                ? `조명 ${byteToHex(bytes[2])} 상태 ${bytes[1] ? 'ON' : 'OFF'} 밝기 ${bytes[5]}`
+                : `조명 ${byteToHex(bytes[2])} 상태 ${bytes[1] ? 'ON' : 'OFF'}`;
+        case 0x82:
+        case 0x84:
+            return `난방 ${byteToHex(bytes[2])} 상태 ${byteToHex(bytes[1])} 현재 ${byteToHex(bytes[3])} 목표 ${byteToHex(bytes[4])}`;
+        case 0xF6:
+        case 0xF8:
+            return `환기 ${byteToHex(bytes[2])} ${describeFanMode(bytes[1])} 풍량 ${bytes[3]}`;
+        case 0xA0:
+        case 0xA2:
+            return `일괄소등 상태 ${bytes[1] ? 'ON' : 'OFF'}`;
+        case 0x26:
+            return `엘리베이터 ${byteToHex(bytes[2])} 상태 ${byteToHex(bytes[3])}`;
+        default:
+            return '';
+    }
+}
+
+function formatCommandLog(command) {
+    return formatWithDescription(command, describeCommand(command));
+}
+
+function formatStateFrameLog(bytes) {
+    return formatWithDescription(bytes, describeStateFrame(bytes));
+}
+
+function formatResponseTime(commandEntry, now = Date.now()) {
+    return commandEntry.sentAt ? `응답 ${now - commandEntry.sentAt}ms` : '응답시간 알 수 없음';
+}
 
 class CommandHandler {
-    constructor() {
-        this.pq = new PriorityQueue();
-        this.lastDataTime = Date.now();
-        this.lastMqtt = Date.now();
-        this.commandMetadata = new Map(); // 명령 메타데이터 저장 (타이머, 재시도 횟수 등)
-        this.MAX_RETRIES = 3; // 최대 재시도 횟수
-        this.RETRY_TIMEOUT = 500; // 재시도 대기 시간 (500ms)
+    constructor({ topicPrefix, env = process.env, logger = log }) {
+        this.topicPrefix = topicPrefix;
+        this.priorityQueue = new PriorityQueue();
+        this.lastMqttCommandAt = 0;
+        this.logMqttCommands = shouldLogMqttCommands(env);
+        this.retryConfig = readRetryConfig(env);
+        this.logger = logger;
+        this.commandMetadata = new Map();
+        this.nextCommandId = 1;
+    }
+
+    publishRetained(mqttClient, topic, message) {
+        mqttClient.publish(topic, String(message), { retain: true }, (err) => {
+            if (err) {
+                logError(`Failed to publish ${topic}:`, err);
+            }
+        });
     }
 
     safeWrite(command, socket) {
-        if (!socket.writableNeedDrain) {
-            socket.write(command);
-            log(`-> ${command.toString('hex').match(/.{1,2}/g).join(' ').toUpperCase()}`);
-        } else {
-            this.pq.enqueue(command, 1);
+        if (!socket || socket.destroyed || !socket.writable) {
+            log('Socket is not connected. Command not sent.');
+            return;
         }
+
+        if (socket.writableNeedDrain) {
+            this.priorityQueue.enqueue(command, 1);
+            return;
+        }
+
+        socket.write(command);
+        this.markCommandSent(command, true);
+        log(`-> ${formatCommandLog(command)}`);
     }
 
-    sendCommand(cmd, priority = 1) {
+    sendCommand(command, priority = 1, options = {}) {
+        if (options.supersedeKey) {
+            this.removePendingBySupersedeKey(options.supersedeKey);
+        }
+
         const commandEntry = {
-            command: cmd,
+            id: this.nextCommandId++,
+            command,
             priority,
-            sentAt: Date.now(),
             retries: 0,
-            deviceType: this.getDeviceTypeFromCommand(cmd),
-            deviceId: cmd[1].toString(16).padStart(2, '0')
+            deviceType: this.getDeviceTypeFromCommand(command),
+            deviceId: command[1].toString(16).padStart(2, '0'),
+            hexKey: command.toString('hex'),
+            supersedeKey: options.supersedeKey || null,
+            sentAt: null,
+            timeout: null,
         };
-        this.pq.enqueue(commandEntry.command, priority);
-        this.commandMetadata.set(commandEntry.command.toString('hex'), commandEntry);
-        this.startRetryTimer(commandEntry);
+
+        this.priorityQueue.enqueue(commandEntry.command, priority);
+        this.commandMetadata.set(commandEntry.id, commandEntry);
     }
 
     startRetryTimer(commandEntry) {
+        clearTimeout(commandEntry.timeout);
         commandEntry.timeout = setTimeout(() => {
-            this.retryCommand(commandEntry);
-        }, this.RETRY_TIMEOUT);
+            this.retryCommand(commandEntry.id);
+        }, this.retryConfig.retryTimeoutMs);
     }
 
-    retryCommand(commandEntry) {
-        const hexKey = commandEntry.command.toString('hex');
-        if (!this.commandMetadata.has(hexKey)) return; // 이미 삭제된 경우 무시
+    retryCommand(commandId) {
+        const commandEntry = this.commandMetadata.get(commandId);
+        if (!commandEntry) {
+            return;
+        }
 
-        if (commandEntry.retries >= this.MAX_RETRIES) {
-            logError(`${hexKey.match(/.{1,2}/g).join(' ').toUpperCase()} 명령 재전송 실패 한도 도달 (${this.MAX_RETRIES})`);
-            this.commandMetadata.delete(hexKey);
+        if (commandEntry.retries >= this.retryConfig.maxRetries) {
+            logError(`${formatCommandLog(commandEntry.command)} 명령 재전송 실패 한도 도달 (${this.retryConfig.maxRetries})`);
+            this.removeCommand(commandId);
             return;
         }
 
         commandEntry.retries += 1;
-        log(`-> ${hexKey.match(/.{1,2}/g).join(' ').toUpperCase()} 명령 재전송 (${commandEntry.retries}/${this.MAX_RETRIES})`);
-        this.pq.enqueue(commandEntry.command, commandEntry.priority); // 큐에 다시 추가
-        this.startRetryTimer(commandEntry);
+        log(`${formatCommandLog(commandEntry.command)} 명령 재전송 예약 (${commandEntry.retries}/${this.retryConfig.maxRetries})`);
+        this.priorityQueue.enqueue(commandEntry.command, commandEntry.priority);
     }
 
-    removeCommand(command) {
-        const hexKey = command.toString('hex');
-        const commandEntry = this.commandMetadata.get(hexKey);
-        if (commandEntry) {
+    removeCommand(commandId) {
+        const commandEntry = this.commandMetadata.get(commandId);
+        if (!commandEntry) {
+            return;
+        }
+
+        clearTimeout(commandEntry.timeout);
+        this.commandMetadata.delete(commandId);
+    }
+
+    removePendingBySupersedeKey(supersedeKey) {
+        const removedHexKeys = new Set();
+
+        for (const [commandId, commandEntry] of this.commandMetadata.entries()) {
+            if (commandEntry.supersedeKey !== supersedeKey) {
+                continue;
+            }
+
             clearTimeout(commandEntry.timeout);
-            this.commandMetadata.delete(hexKey);
+            removedHexKeys.add(commandEntry.hexKey);
+            this.commandMetadata.delete(commandId);
+        }
+
+        if (removedHexKeys.size === 0) {
+            return;
+        }
+
+        this.priorityQueue.removeWhere(({ value }) => removedHexKeys.has(value.toString('hex')));
+    }
+
+    markCommandSent(command, restartTimer = false) {
+        const hexKey = command.toString('hex');
+        let fallbackEntry = null;
+
+        for (const commandEntry of this.commandMetadata.values()) {
+            if (commandEntry.hexKey !== hexKey) {
+                continue;
+            }
+
+            if (!fallbackEntry || (commandEntry.sentAt && commandEntry.sentAt < fallbackEntry.sentAt)) {
+                fallbackEntry = commandEntry;
+            }
+
+            if (!commandEntry.sentAt) {
+                commandEntry.sentAt = Date.now();
+                if (restartTimer) {
+                    this.startRetryTimer(commandEntry);
+                }
+                return;
+            }
+        }
+
+        if (fallbackEntry) {
+            fallbackEntry.sentAt = Date.now();
+            if (restartTimer) {
+                this.startRetryTimer(fallbackEntry);
+            }
         }
     }
 
+    hasPendingSupersedeKey(supersedeKey) {
+        for (const commandEntry of this.commandMetadata.values()) {
+            if (commandEntry.supersedeKey === supersedeKey) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    findPendingCommand(deviceType, deviceId, bytes) {
+        for (const commandEntry of this.commandMetadata.values()) {
+            if (
+                commandEntry.deviceType === deviceType
+                && commandEntry.deviceId === deviceId
+                && this.matchesAckOrState(commandEntry, bytes)
+            ) {
+                return commandEntry;
+            }
+        }
+
+        return null;
+    }
+
+    matchesAckOrState(commandEntry, bytes) {
+        const command = commandEntry.command;
+
+        switch (commandEntry.deviceType) {
+            case 'outlet':
+                return this.matchesOutletAck(command, bytes);
+            case 'light':
+                return this.matchesLightAck(command, bytes);
+            case 'temp':
+                return this.matchesTemperatureAck(command, bytes);
+            case 'fan':
+                return this.matchesFanAck(command, bytes);
+            case 'master_light':
+                return bytes[1] === command[2];
+            default:
+                return true;
+        }
+    }
+
+    matchesOutletAck(command, bytes) {
+        const commandType = command[2];
+        const value = command[3];
+
+        switch (commandType) {
+            case 0x01:
+                return (bytes[1] & 0x01) === (value & 0x01);
+            case 0x02:
+                return (bytes[1] & 0x10 ? 1 : 0) === (value ? 1 : 0);
+            case 0x03:
+                return decodeBcdNumber([bytes[5], bytes[6]]) === command[4];
+            default:
+                return true;
+        }
+    }
+
+    matchesLightAck(command, bytes) {
+        const power = command[2];
+
+        if (power === 0x03) {
+            return bytes[1] !== 0x00 && bytes[5] === command[6];
+        }
+
+        return bytes[1] === power;
+    }
+
+    matchesTemperatureAck(command, bytes) {
+        const commandType = command[2];
+        const value = command[3];
+
+        if (commandType === 0x03) {
+            return bytes[4] === value;
+        }
+
+        if (commandType === 0x04) {
+            return value === 0x00
+                ? bytes[1] === 0x80 || bytes[1] === 0x00
+                : bytes[1] === 0x81 || bytes[1] === 0x83;
+        }
+
+        return true;
+    }
+
+    matchesFanAck(command, bytes) {
+        const commandType = command[2];
+        const value = command[3];
+
+        if (commandType === 0x02) {
+            return bytes[3] === value;
+        }
+
+        if (commandType === 0x01) {
+            if (value === 0x02) {
+                return bytes[1] === 0x01 || bytes[1] === 0x02;
+            }
+
+            return bytes[1] === value;
+        }
+
+        return true;
+    }
+
     getDeviceTypeFromCommand(command) {
-        const header = command[0];
-        switch (header) {
-            case 0x7A: return 'outlet';
-            case 0x31: return 'light';
-            case 0x04: return 'temp';
-            case 0x78: return 'fan';
-            case 0xA0: return 'elevator';
-            case 0x22: return 'master_light';
-            default: return null;
+        switch (command[0]) {
+            case 0x7A:
+                return 'outlet';
+            case 0x31:
+                return 'light';
+            case 0x04:
+                return 'temp';
+            case 0x78:
+                return 'fan';
+            case 0xA0:
+                return 'elevator';
+            case 0x22:
+                return 'master_light';
+            default:
+                return null;
         }
     }
 
     handleAckOrState(bytes) {
         const header = bytes[0];
-        let deviceId;
         let deviceType;
+        let deviceId;
 
         switch (header) {
-            case 0xF9: case 0xFA:
+            case 0xF9:
+            case 0xFA:
                 deviceType = 'outlet';
                 deviceId = bytes[2].toString(16).padStart(2, '0');
-            break;
-
-            case 0xB1: case 0xB0:
+                break;
+            case 0xB0:
+            case 0xB1:
                 deviceType = 'light';
                 deviceId = bytes[2].toString(16).padStart(2, '0');
-            break;
-
-            case 0x82: case 0x84:
+                break;
+            case 0x82:
+            case 0x84:
                 deviceType = 'temp';
                 deviceId = bytes[2].toString(16).padStart(2, '0');
-            break;
-
-            case 0xF6: case 0xF8:
+                break;
+            case 0xF6:
+            case 0xF8:
                 deviceType = 'fan';
                 deviceId = bytes[2].toString(16).padStart(2, '0');
-            break;
-
+                break;
             case 0x26:
                 deviceType = 'elevator';
                 deviceId = bytes[2].toString(16).padStart(2, '0');
-            break;
-
-            // 0xA2 가 EV 랑 겹침. EV 는 0x26 패킷이 지속적으로 오기 때문에 이 패킷으로 ACK 를 대체.
-            case 0xA2: case 0xA0:
+                break;
+            case 0xA0:
+            case 0xA2:
                 deviceType = 'master_light';
                 deviceId = bytes[2].toString(16).padStart(2, '0');
-            break;
-
+                break;
             default:
                 return;
         }
 
-        // 해당 디바이스와 관련된 명령 찾기
-        for (const [hexKey, entry] of this.commandMetadata.entries()) {
-            if (entry.deviceType === deviceType && entry.deviceId === deviceId) {
-                log(`<- ${bytes.map(b => b.toString(16).padStart(2, '0')).join(' ').toUpperCase()} ACK/STATE 수신 완료. 명령 성공 ${hexKey.match(/.{1,2}/g).join(' ').toUpperCase()}`);
-                this.removeCommand(Buffer.from(hexKey, 'hex'));
-                break;
-            }
+        const pendingCommand = this.findPendingCommand(deviceType, deviceId, bytes);
+        if (!pendingCommand) {
+            return;
         }
+
+        log(`<- ${formatStateFrameLog(bytes)} ACK/STATE 수신 완료 (${formatResponseTime(pendingCommand)})`);
+        this.removeCommand(pendingCommand.id);
     }
 
     dequeueAndWrite(socket) {
-        const gap = Date.now() - this.lastDataTime;
-        if (!this.pq.isEmpty()) {
-            const { value } = this.pq.dequeue();
-            this.safeWrite(value, socket);
+        if (this.priorityQueue.isEmpty()) {
+            return;
         }
+
+        const { value } = this.priorityQueue.dequeue();
+        this.safeWrite(value, socket);
     }
 
     createOutletCommand(deviceId, commandType, value, power = 0) {
-        // const powerHigh = (power >> 8) & 0xFF;
-        // const powerLow = power & 0xFF;
-
         const bytes = [
             0x7A,
-            parseInt(deviceId, 16),
+            Number.parseInt(deviceId, 16),
             commandType,
             value,
             power,
             0x00,
-            0x00
+            0x00,
         ];
+
         bytes.push(calculateChecksum(bytes));
         return Buffer.from(bytes);
     }
 
     createLightPacket(deviceId, power, brightness) {
-        const header = 0x31;
-        const deviceIdByte = parseInt(deviceId, 16);
-
         const bytes = [
-            header,
-            deviceIdByte,
+            0x31,
+            Number.parseInt(deviceId, 16),
             power,
             0x00,
             0x00,
             0x00,
-            brightness
+            brightness,
         ];
 
-        const checksum = calculateChecksum(bytes);
-        return Buffer.from([...bytes, checksum]);
+        bytes.push(calculateChecksum(bytes));
+        return Buffer.from(bytes);
     }
 
     createTemperatureCommand(deviceId, type, value) {
         const bytes = [
             0x04,
-            parseInt(deviceId, 16),
+            Number.parseInt(deviceId, 16),
             type,
             value,
-            0x00, 0x00, 0x00
+            0x00,
+            0x00,
+            0x00,
         ];
+
         bytes.push(calculateChecksum(bytes));
         return Buffer.from(bytes);
     }
@@ -189,11 +524,14 @@ class CommandHandler {
     createVentilationCommand(deviceId, commandType, value) {
         const bytes = [
             0x78,
-            parseInt(deviceId, 16),
+            Number.parseInt(deviceId, 16),
             commandType,
             value,
-            0x00, 0x00, 0x00
+            0x00,
+            0x00,
+            0x00,
         ];
+
         bytes.push(calculateChecksum(bytes));
         return Buffer.from(bytes);
     }
@@ -201,13 +539,14 @@ class CommandHandler {
     createElevatorCallCommand(deviceId) {
         const bytes = [
             0xA0,
-            parseInt(deviceId, 16),
+            Number.parseInt(deviceId, 16),
             0x01,
             0x00,
             0x28,
             0xD7,
-            0x00
+            0x00,
         ];
+
         bytes.push(calculateChecksum(bytes));
         return Buffer.from(bytes);
     }
@@ -215,154 +554,215 @@ class CommandHandler {
     createMasterLightCommand(deviceId, state) {
         const bytes = [
             0x22,
-            parseInt(deviceId, 16),
-            state, // 0x01: ON, 0x00: OFF
+            Number.parseInt(deviceId, 16),
+            state,
             0x01,
             0x00,
             0x00,
-            0x00
+            0x00,
         ];
+
         bytes.push(calculateChecksum(bytes));
         return Buffer.from(bytes);
     }
 
-    handleMessage(topic, message, mqttClient) {
-        const packet = topic.split('/');
-        const packetRaw = message.toString();
+    extractDeviceId(segment) {
+        return segment ? segment.replace(DEVICE_ID_PREFIX_PATTERN, '') : '';
+    }
 
-        const lastPart = packet.at(-1);
-        if (!lastPart.includes("set") && !lastPart.includes("call")) return;
+    handleOutletMessage(topicParts, payload, mqttClient) {
+        const deviceId = this.extractDeviceId(topicParts[2]);
 
-        const device = packet[1];
-        const deviceId = Number(packet[2].replace(/^(outlet_|light_|temp_)/, ''));
-        const deviceId2 = packet[2].replace(/^(outlet_|light_|temp_)/, '');
-
-        switch (device) {
-            case 'outlet':
-                if (packet.length === 4) {
-                    const stateByte = packetRaw === 'ON' ? 0x01 : 0x00;
-                    const command = this.createOutletCommand(deviceId2, 0x01, stateByte);
-                    this.sendCommand(command);
-                    mqttClient.publish(`${topicPrefix}/outlet/${deviceId2}/state`, packetRaw, { retain: true });
-                } else if (packet.at(-2) === 'standby_power') {
-                    const power = parseInt(packetRaw, 10);
-                    if (isNaN(power) || power < 0 || power > 50) return;
-                    const command = this.createOutletCommand(deviceId2, 0x03, 0x00, power);
-                    this.sendCommand(command);
-                    mqttClient.publish(`${topicPrefix}/outlet/${deviceId2}/standby_power`, power.toString(), { retain: true });
-                } else if (packet.at(-2) === 'standby_mode') {
-                    const modeByte = packetRaw === 'AUTO' ? 0x01 : 0x00;
-                    const command = this.createOutletCommand(deviceId2, 0x02, modeByte);
-                    this.sendCommand(command);
-                    mqttClient.publish(`${topicPrefix}/outlet/${deviceId2}/standby_mode`, packetRaw, { retain: true });
-                }
-                break;
-
-            case 'light':
-                if (packet.at(-2) === 'brightness') {
-                    this.lastMqtt = Date.now();
-                    const brightness = Number(packetRaw);
-                    const power = 0x03;
-                    const packetBuffer = this.createLightPacket(deviceId, power, brightness);
-                    this.sendCommand(packetBuffer);
-
-                    const btopic = `${topicPrefix}/light/${deviceId2}/brightness`;
-                    mqttClient.publish(btopic, packetRaw, { retain: true }, (err) => {
-                        if (err) console.error(`Failed to publish brightness for device ${deviceId}:`, err);
-                    });
-
-                    const ptopic = `${topicPrefix}/light/${deviceId2}/state`;
-                    mqttClient.publish(ptopic, 'ON', { retain: true }, (err) => {
-                        if (err) console.error(`Failed to publish state for device ${deviceId}:`, err);
-                    });
-                } else {
-                    // 밝기 조정 이후 즉시 ON 명령이 오는데 이미 켜져있으므로 무시 해야함.
-                    const gap = Date.now() - this.lastMqtt;
-                    if (gap < 10) return;
-
-                    this.lastMqtt = Date.now();
-                    const power = packetRaw === 'ON' ? 0x01 : 0x00;
-                    const packetBuffer = this.createLightPacket(deviceId, power, 0);
-                    this.sendCommand(packetBuffer);
-
-                    const topic = `${topicPrefix}/light/${deviceId2}/state`;
-                    mqttClient.publish(topic, power ? 'ON' : 'OFF', { retain: true }, (err) => {
-                        if (err) console.error(`Failed to publish state for device ${deviceId}:`, err);
-                    });
-                }
-                break;
-
-            case 'temp':
-                if (packet.at(-1) === 'set_mode') {
-                    const mode = packetRaw;
-                    const value = mode === 'off' ? 0x00 : 0x81;
-                    const command = this.createTemperatureCommand(deviceId, 0x04, value);
-                    this.sendCommand(command);
-                    mqttClient.publish(`${topicPrefix}/temp/${deviceId2}/mode`, mode, { retain: true });
-                } else if (packet.at(-1) === 'set_temp') {
-                    const temp16 = parseInt(packetRaw, 16);
-                    const temp = parseInt(packetRaw, 10);
-
-                    if (isNaN(temp) || temp < 16 || temp > 30) return;
-                    const command = this.createTemperatureCommand(deviceId, 0x03, temp16);
-                    this.sendCommand(command);
-                    mqttClient.publish(`${topicPrefix}/temp/${deviceId2}/mode`, "heat", { retain: true });
-                    mqttClient.publish(`${topicPrefix}/temp/${deviceId2}/target_temp`, temp.toString(), { retain: true });
-                }
-                break;
-
-            case 'fan':
-                if (packet.at(-1) === 'set') {
-                    const state = packetRaw === 'ON' ? 0x04 : 0x00;
-                    const command = this.createVentilationCommand(deviceId2, 0x01, state);
-                    this.sendCommand(command);
-                    mqttClient.publish(`${topicPrefix}/fan/${deviceId2}/state`, packetRaw, { retain: true });
-                } else if (packet.at(-1) === 'set_mode') {
-                    const modeValue = packetRaw === 'auto' ? 0x02 : packetRaw === 'bypass' ? 0x07 : 0x04;
-                    const command = this.createVentilationCommand(deviceId2, 0x01, modeValue);
-                    this.sendCommand(command);
-                    mqttClient.publish(`${topicPrefix}/fan/${deviceId2}/mode`, packetRaw, { retain: true });
-                } else if (packet.at(-1) === 'set_speed') {
-                    const speed = parseInt(packetRaw, 10);
-                    if (isNaN(speed) || speed < 0 || speed > 3) {
-                        console.error(`Invalid speed: ${packetRaw}. Must be between 0 and 3`);
-                        return;
-                    }
-                    if (speed === 0) {
-                        const command = this.createVentilationCommand(deviceId2, 0x01, 0x00);
-                        this.sendCommand(command);
-                        mqttClient.publish(`${topicPrefix}/fan/${deviceId2}/state`, "OFF", { retain: true });
-                        mqttClient.publish(`${topicPrefix}/fan/${deviceId2}/speed`, "0", { retain: true });
-                    } else {
-                        const speedValue = speed === 1 ? 0x01 : speed === 2 ? 0x02 : 0x03;
-                        const command = this.createVentilationCommand(deviceId2, 0x02, speedValue);
-                        this.sendCommand(command);
-                        mqttClient.publish(`${topicPrefix}/fan/${deviceId2}/speed`, speed.toString(), { retain: true });
-                        mqttClient.publish(`${topicPrefix}/fan/${deviceId2}/state`, "ON", { retain: true });
-                    }
-                }
-                break;
-
-            case 'elevator':
-                // log(packet);
-                // log(packetRaw);
-                // if (packet.at(-1) === 'call') {
-                //     const command = this.createElevatorCallCommand(deviceId2);
-                //     this.sendCommand(command);
-                //     log(`Elevator ${deviceId2}: Call command sent`);
-                // }
-            break;
-
-            case 'master_light':
-                if (packet.at(-1) === 'set') { // devcommax/master_light/set
-                    const state = packetRaw === 'ON' ? 0x01 : 0x00;
-                    const command = this.createMasterLightCommand("01", state);
-                    this.sendCommand(command);
-                    mqttClient.publish(`${topicPrefix}/master_light/state`, packetRaw, { retain: true });
-                }
-            break;
+        if (topicParts.length === 4) {
+            const stateByte = payload === 'ON' ? 0x01 : 0x00;
+            this.sendCommand(this.createOutletCommand(deviceId, 0x01, stateByte), 1, {
+                supersedeKey: `outlet:${deviceId}:state`,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/outlet/${deviceId}/state`, payload);
+            return;
         }
+
+        if (topicParts.at(-2) === 'standby_power') {
+            const power = Number.parseInt(payload, 10);
+            if (Number.isNaN(power) || power < 0 || power > 50) {
+                return;
+            }
+
+            this.sendCommand(this.createOutletCommand(deviceId, 0x03, 0x00, power), 1, {
+                supersedeKey: `outlet:${deviceId}:standby_power`,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/outlet/${deviceId}/standby_power`, power);
+            return;
+        }
+
+        if (topicParts.at(-2) === 'standby_mode') {
+            const modeByte = payload === 'AUTO' ? 0x01 : 0x00;
+            this.sendCommand(this.createOutletCommand(deviceId, 0x02, modeByte), 1, {
+                supersedeKey: `outlet:${deviceId}:standby_mode`,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/outlet/${deviceId}/standby_mode`, payload);
+        }
+    }
+
+    handleLightMessage(topicParts, payload, mqttClient) {
+        const deviceId = this.extractDeviceId(topicParts[2]);
+        const brightnessKey = `light:${deviceId}:brightness`;
+
+        if (topicParts.at(-2) === 'brightness') {
+            this.sendCommand(this.createLightPacket(deviceId, 0x03, Number(payload)), 1, {
+                supersedeKey: brightnessKey,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/light/${deviceId}/brightness`, payload);
+            this.publishRetained(mqttClient, `${this.topicPrefix}/light/${deviceId}/state`, 'ON');
+            return;
+        }
+
+        if (payload === 'ON' && this.hasPendingSupersedeKey(brightnessKey)) {
+            return;
+        }
+
+        const power = payload === 'ON' ? 0x01 : 0x00;
+        this.sendCommand(this.createLightPacket(deviceId, power, 0), 1, {
+            supersedeKey: `light:${deviceId}:state`,
+        });
+        this.publishRetained(mqttClient, `${this.topicPrefix}/light/${deviceId}/state`, power ? 'ON' : 'OFF');
+    }
+
+    handleTemperatureMessage(topicParts, payload, mqttClient) {
+        const deviceId = this.extractDeviceId(topicParts[2]);
+        const action = topicParts.at(-1);
+
+        if (action === 'set_mode') {
+            const modeValue = payload === 'off' ? 0x00 : 0x81;
+            this.sendCommand(this.createTemperatureCommand(deviceId, 0x04, modeValue), 1, {
+                supersedeKey: `temp:${deviceId}:mode`,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/temp/${deviceId}/mode`, payload);
+            return;
+        }
+
+        if (action === 'set_temp') {
+            const temperature = Number.parseInt(payload, 10);
+            if (Number.isNaN(temperature) || temperature < 16 || temperature > 30) {
+                return;
+            }
+
+            this.sendCommand(this.createTemperatureCommand(deviceId, 0x03, encodeDecimalDigitsToByte(payload)), 1, {
+                supersedeKey: `temp:${deviceId}:target_temp`,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/temp/${deviceId}/mode`, 'heat');
+            this.publishRetained(mqttClient, `${this.topicPrefix}/temp/${deviceId}/target_temp`, temperature);
+        }
+    }
+
+    handleFanMessage(topicParts, payload, mqttClient) {
+        const deviceId = this.extractDeviceId(topicParts[2]);
+        const action = topicParts.at(-1);
+
+        if (action === 'set') {
+            const stateValue = payload === 'ON' ? 0x04 : 0x00;
+            this.sendCommand(this.createVentilationCommand(deviceId, 0x01, stateValue), 1, {
+                supersedeKey: `fan:${deviceId}:state`,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/state`, payload);
+            return;
+        }
+
+        if (action === 'set_mode') {
+            const modeValue = payload === 'auto' ? 0x02 : payload === 'bypass' ? 0x07 : 0x04;
+            this.sendCommand(this.createVentilationCommand(deviceId, 0x01, modeValue), 1, {
+                supersedeKey: `fan:${deviceId}:mode`,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/mode`, payload);
+            return;
+        }
+
+        if (action !== 'set_speed') {
+            return;
+        }
+
+        const speed = Number.parseInt(payload, 10);
+        if (Number.isNaN(speed) || speed < 0 || speed > 3) {
+            logError(`Invalid speed: ${payload}. Must be between 0 and 3`);
+            return;
+        }
+
+        if (speed === 0) {
+            this.sendCommand(this.createVentilationCommand(deviceId, 0x01, 0x00), 1, {
+                supersedeKey: `fan:${deviceId}:state`,
+            });
+            this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/state`, 'OFF');
+            this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/speed`, '0');
+            return;
+        }
+
+        const speedValue = speed === 1 ? 0x01 : speed === 2 ? 0x02 : 0x03;
+        this.sendCommand(this.createVentilationCommand(deviceId, 0x02, speedValue), 1, {
+            supersedeKey: `fan:${deviceId}:speed`,
+        });
+        this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/speed`, speed);
+        this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/state`, 'ON');
+    }
+
+    handleMasterLightMessage(payload, mqttClient) {
+        const state = payload === 'ON' ? 0x01 : 0x00;
+        this.sendCommand(this.createMasterLightCommand('01', state), 1, {
+            supersedeKey: 'master_light:01:state',
+        });
+        this.publishRetained(mqttClient, `${this.topicPrefix}/master_light/state`, payload);
+    }
+
+    handleMessage(topic, message, mqttClient) {
+        const topicParts = topic.split('/');
+        const payload = message.toString();
+        const action = topicParts.at(-1);
+
+        if (!SUPPORTED_TOPIC_ACTIONS.has(action)) {
+            return;
+        }
+
+        this.logMqttCommand(topic, payload);
+
+        switch (topicParts[1]) {
+            case 'outlet':
+                this.handleOutletMessage(topicParts, payload, mqttClient);
+                break;
+            case 'light':
+                this.handleLightMessage(topicParts, payload, mqttClient);
+                break;
+            case 'temp':
+                this.handleTemperatureMessage(topicParts, payload, mqttClient);
+                break;
+            case 'fan':
+                this.handleFanMessage(topicParts, payload, mqttClient);
+                break;
+            case 'elevator':
+                break;
+            case 'master_light':
+                if (action === 'set') {
+                    this.handleMasterLightMessage(payload, mqttClient);
+                }
+                break;
+        }
+    }
+
+    logMqttCommand(topic, payload) {
+        if (!this.logMqttCommands) {
+            return;
+        }
+
+        const now = Date.now();
+        const delta = this.lastMqttCommandAt === 0 ? 0 : now - this.lastMqttCommandAt;
+        this.lastMqttCommandAt = now;
+        this.logger(`[MQTT CMD +${delta}ms] ${topic} <= ${payload}`);
     }
 }
 
 module.exports = CommandHandler;
+module.exports.describeCommand = describeCommand;
+module.exports.describeStateFrame = describeStateFrame;
+module.exports.formatCommandLog = formatCommandLog;
+module.exports.formatResponseTime = formatResponseTime;
+module.exports.formatStateFrameLog = formatStateFrameLog;
+module.exports.readRetryConfig = readRetryConfig;
+module.exports.shouldLogMqttCommands = shouldLogMqttCommands;

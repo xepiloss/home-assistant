@@ -74,7 +74,7 @@ test('parseWallpadTimePacket decodes BCD wallpad date and time', () => {
         minute: 19,
         second: 59,
         period: '2026-04',
-        display: '2026-04-25 02:19:59',
+        display: '시간: 2026-04-25 02:19:59',
         iso: '2026-04-25T02:19:59+09:00',
     });
 });
@@ -82,7 +82,8 @@ test('parseWallpadTimePacket decodes BCD wallpad date and time', () => {
 test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for monthly metering', async () => {
     const mqttClient = createMqttStub();
     const lifeInfoState = {
-        wallpadTimeDiscovered: false,
+        wallpadTimeDiscovered: true,
+        wallpadTimeDiscoveryVersion: 1,
         rawPacketDiscovered: false,
         lastWallpadTime: null,
     };
@@ -103,10 +104,11 @@ test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for mo
     assert.equal(handled, true);
     assert.equal(lifeInfoState.lastWallpadTime.period, '2026-04');
     assert.equal(saveCount, 1);
+    assert.equal(lifeInfoState.wallpadTimeDiscoveryVersion, 2);
     const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_wallpad_time/config');
 
     assert.equal(discoveryPayload.device_class, undefined);
-    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '2026-04-25 02:19:59'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '시간: 2026-04-25 02:19:59'));
 });
 
 test('parseLifeInfoPacket exposes raw living information bytes without guessing labels', () => {

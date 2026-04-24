@@ -26,6 +26,7 @@ function createInitialState() {
         discoveredMeters: new Set(),
         lifeInfoState: {
             wallpadTimeDiscovered: false,
+            wallpadTimeDiscoveryVersion: 0,
             rawPacketDiscovered: false,
             lastWallpadTime: null,
         },
@@ -60,6 +61,7 @@ function normalizeState(raw = {}) {
         discoveredMeters: new Set(raw.discoveredMeters || []),
         lifeInfoState: {
             wallpadTimeDiscovered: raw.lifeInfoState?.wallpadTimeDiscovered || false,
+            wallpadTimeDiscoveryVersion: raw.lifeInfoState?.wallpadTimeDiscoveryVersion || 0,
             rawPacketDiscovered: raw.lifeInfoState?.rawPacketDiscovered || false,
             lastWallpadTime: raw.lifeInfoState?.lastWallpadTime || null,
         },
@@ -91,6 +93,7 @@ function serializeState(state) {
         discoveredMeters: Array.from(state.discoveredMeters),
         lifeInfoState: {
             wallpadTimeDiscovered: state.lifeInfoState.wallpadTimeDiscovered,
+            wallpadTimeDiscoveryVersion: state.lifeInfoState.wallpadTimeDiscoveryVersion || 0,
             rawPacketDiscovered: state.lifeInfoState.rawPacketDiscovered,
             lastWallpadTime: state.lifeInfoState.lastWallpadTime,
         },

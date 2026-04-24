@@ -125,6 +125,7 @@ const METERING_ICON_DISCOVERY_ID = 'commax_metering_icons_v2';
 const MONTHLY_METERING_DISCOVERY_ID = 'commax_metering_monthly';
 const MONTHLY_METERING_ICON_DISCOVERY_ID = 'commax_metering_monthly_icons_v2';
 const PARKING_ICON_DISCOVERY_VERSION = 2;
+const WALLPAD_TIME_DISCOVERY_VERSION = 2;
 const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';
 const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
 
@@ -879,7 +880,7 @@ function parseWallpadTimePacket(bytes) {
     }
 
     wallpadTime.period = `${wallpadTime.year}-${pad2(month)}`;
-    wallpadTime.display = `${wallpadTime.period}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}:${pad2(second)}`;
+    wallpadTime.display = `시간: ${wallpadTime.period}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}:${pad2(second)}`;
     wallpadTime.iso = `${wallpadTime.period}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:${pad2(second)}+09:00`;
 
     return wallpadTime;
@@ -895,7 +896,7 @@ function analyzeAndDiscoverWallpadTime(bytes, lifeInfoState, mqttClient, options
 
     lifeInfoState.lastWallpadTime = parsed;
 
-    if (!lifeInfoState.wallpadTimeDiscovered) {
+    if (lifeInfoState.wallpadTimeDiscoveryVersion !== WALLPAD_TIME_DISCOVERY_VERSION) {
         const sensorConfig = {
             name: '월패드 시간',
             unique_id: WALLPAD_TIME_DISCOVERY_ID,
@@ -913,6 +914,7 @@ function analyzeAndDiscoverWallpadTime(bytes, lifeInfoState, mqttClient, options
             sensorConfig,
             async () => {
                 lifeInfoState.wallpadTimeDiscovered = true;
+                lifeInfoState.wallpadTimeDiscoveryVersion = WALLPAD_TIME_DISCOVERY_VERSION;
                 await saveState();
                 publishAvailability(mqttClient, topics.availability('life_info', 'wallpad_time'), 'available');
             },

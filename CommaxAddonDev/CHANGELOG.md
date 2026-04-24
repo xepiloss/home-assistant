@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.3-dev - 2026-04-25
+
+### Changed
+
+- Dev 애드온 시작 로그에 현재 버전을 출력하도록 했습니다.
+
 ## 1.1.2-dev - 2026-04-25
 
 Home Assistant에서 Dev 애드온 업데이트가 감지되도록 버전을 올린 개발 배포입니다.
@@ -12,7 +18,7 @@ Home Assistant에서 Dev 애드온 업데이트가 감지되도록 버전을 올
 ## 1.1.1-dev - 2026-04-25
 
 패킷 수집과 생활정보 분석을 계속하기 위한 개발용 애드온 배포입니다.
-
+[commax_unknown_packets.jsonl](../../../../../Volumes/share/commax_unknown_packets.jsonl)
 ### Added
 
 - 개발용 애드온 `Commax Wallpad Dev`를 추가했습니다.

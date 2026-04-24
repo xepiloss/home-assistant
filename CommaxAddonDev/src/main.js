@@ -1,6 +1,7 @@
 const MqttClient = require('./mqttClient');
 const Ew11Client = require('./ew11Client');
 const CommandHandler = require('./commandHandler');
+const { version: ADDON_VERSION } = require('../package.json');
 const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame } = require('./knownPackets');
 const { createPacketCapture } = require('./packetCapture');
 const { log, logError } = require('./utils');
@@ -395,7 +396,7 @@ function installShutdownHandlers({ mqttClient, primaryClient, meteringClient, av
 }
 
 async function main() {
-    log('애드온을 시작합니다.');
+    log(`Commax Wallpad Dev ${ADDON_VERSION} 애드온을 시작합니다.`);
 
     const config = loadConfig();
     const topics = createTopicBuilder(config.mqtt.topicPrefix);

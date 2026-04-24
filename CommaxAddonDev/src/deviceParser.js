@@ -125,7 +125,7 @@ const METERING_ICON_DISCOVERY_ID = 'commax_metering_icons_v2';
 const MONTHLY_METERING_DISCOVERY_ID = 'commax_metering_monthly';
 const MONTHLY_METERING_ICON_DISCOVERY_ID = 'commax_metering_monthly_icons_v2';
 const PARKING_ICON_DISCOVERY_VERSION = 2;
-const WALLPAD_TIME_DISCOVERY_VERSION = 3;
+const WALLPAD_TIME_DISCOVERY_VERSION = 4;
 const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';
 const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
 
@@ -176,6 +176,14 @@ const MONTHLY_METERING_SENSORS = [
         icon: 'mdi:fire',
     },
 ];
+
+const MONTHLY_METERING_SOURCE_LABELS = Object.freeze({
+    water_acc_meter: '수도 누적',
+    electric_acc_meter: '전기 누적',
+    warm_acc_meter: '온수 누적',
+    heat_acc_meter: '난방 누적',
+    gas_acc_meter: '가스 누적',
+});
 
 function calculateChecksum(bytes) {
     return bytes.reduce((sum, byte) => sum + byte, 0) & 0xFF;
@@ -880,7 +888,7 @@ function parseWallpadTimePacket(bytes) {
     }
 
     wallpadTime.period = `${wallpadTime.year}-${pad2(month)}`;
-    wallpadTime.display = `시간: ${wallpadTime.period}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}`;
+    wallpadTime.display = `${wallpadTime.period}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}`;
     wallpadTime.iso = `${wallpadTime.period}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:${pad2(second)}+09:00`;
 
     return wallpadTime;
@@ -1001,6 +1009,14 @@ function getMonthlyMeteringPeriod(date = new Date()) {
     return `${year}-${month}`;
 }
 
+function getMonthlyMeteringDateSource(date = new Date()) {
+    if (date && typeof date === 'object' && Number.isInteger(date.year) && Number.isInteger(date.month)) {
+        return '월패드 시간 기준';
+    }
+
+    return '시스템 시간 기준';
+}
+
 function roundMeteringValue(value) {
     return Math.round(value * 1000) / 1000;
 }
@@ -1045,6 +1061,8 @@ function applyConfiguredMonthlyUsage(monthlyMeteringState, usageConfig, period, 
             changed = true;
         }
 
+        log(`월간 검침 보정 적용 (${period}, ${MONTHLY_METERING_SOURCE_LABELS[sourceId] || sourceId}): 입력 보정값=${usage}, 현재 누적값=${values[sourceId]}, 월초 누적 기준값=${baseline}`);
+
         appliedUsageConfig.values[sourceId] = usage;
         changed = true;
     });
@@ -1060,9 +1078,11 @@ function calculateMonthlyMeteringValues(values, monthlyMeteringState, date = new
     }
 
     const period = getMonthlyMeteringPeriod(date);
+    const previousPeriod = monthlyMeteringState.period;
+    const dateSource = getMonthlyMeteringDateSource(date);
     let changed = false;
 
-    if (monthlyMeteringState.period !== period) {
+    if (previousPeriod !== period) {
         monthlyMeteringState.period = period;
         monthlyMeteringState.baselines = {};
         monthlyMeteringState.appliedUsageConfig = {
@@ -1086,6 +1106,10 @@ function calculateMonthlyMeteringValues(values, monthlyMeteringState, date = new
             monthlyMeteringState.baselines[sensor.sourceId] = currentValue;
             monthlyValues[sensor.id] = 0;
             changed = true;
+            const periodReason = previousPeriod && previousPeriod !== period
+                ? `${dateSource} 월 변경 ${previousPeriod} -> ${period}`
+                : `${dateSource} ${period} 초기 설정`;
+            log(`월간 검침 자동 기준값 설정 (${periodReason}, ${MONTHLY_METERING_SOURCE_LABELS[sensor.sourceId] || sensor.sourceId}): 현재 누적값=${currentValue}, 월초 누적 기준값=${currentValue}`);
             return;
         }
 

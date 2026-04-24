@@ -24,6 +24,13 @@ const { loadState, saveState } = require('./stateManager');
 const INTERVAL_WINDOW_MS = 10 * 1000;
 const THRESHOLD_INTERVAL_MS = 100;
 const COMMAND_DRAIN_INTERVAL_MS = 50;
+const MONTHLY_USAGE_LABELS = Object.freeze({
+    water_acc_meter: '수도',
+    electric_acc_meter: '전기',
+    warm_acc_meter: '온수',
+    heat_acc_meter: '난방',
+    gas_acc_meter: '가스',
+});
 
 function publishAsync(mqttClient, topic, message, options) {
     return new Promise((resolve, reject) => {
@@ -248,6 +255,45 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
     };
 }
 
+function formatMonthlyUsageValue(sourceId, value) {
+    return `${MONTHLY_USAGE_LABELS[sourceId] || sourceId}=${value}`;
+}
+
+function pad2(value) {
+    return String(value).padStart(2, '0');
+}
+
+function getSystemDateInfo(date = new Date()) {
+    const year = date.getFullYear();
+    const month = pad2(date.getMonth() + 1);
+    const day = pad2(date.getDate());
+
+    return {
+        dateText: `${year}-${month}-${day}`,
+        period: `${year}-${month}`,
+    };
+}
+
+function logMonthlyMeteringUsageConfig(monthlyUsageConfig, date = new Date()) {
+    const configuredValues = Object.entries(monthlyUsageConfig?.values || {})
+        .filter(([, value]) => value !== undefined);
+    const systemDate = getSystemDateInfo(date);
+
+    if (!monthlyUsageConfig?.period || configuredValues.length === 0) {
+        log(`월간 검침 보정값 미입력: 시작일=${systemDate.dateText}, 시스템 기준 월=${systemDate.period}. 검침 패킷 수신 시 이번 달 첫 누적 검침값을 월초 누적 기준값으로 자동 사용합니다.`);
+        return;
+    }
+
+    const valuesText = configuredValues
+        .map(([sourceId, value]) => formatMonthlyUsageValue(sourceId, value))
+        .join(', ');
+    const usagePlan = monthlyUsageConfig.period === systemDate.period
+        ? '현재 시스템 기준 월과 일치하므로 검침 패킷 수신 시 보정값을 적용합니다. 월패드 시간이 수신되면 월패드 기준 월로 다시 판단합니다.'
+        : '현재 시스템 기준 월과 달라 우선 자동 기준값을 사용합니다. 월패드/시스템 기준 월이 보정 월과 일치할 때만 보정값을 적용합니다.';
+
+    log(`월간 검침 보정값 입력 확인: 시작일=${systemDate.dateText}, 시스템 기준 월=${systemDate.period}, 보정 월=${monthlyUsageConfig.period}, 입력값=${valuesText}. ${usagePlan}`);
+}
+
 function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket }) {
     return (bytes) => {
         packetMonitor.recordPacket();
@@ -399,6 +445,7 @@ async function main() {
     log(`Commax Wallpad Dev ${ADDON_VERSION} 애드온을 시작합니다.`);
 
     const config = loadConfig();
+    logMonthlyMeteringUsageConfig(config.monthlyMeteringUsageOverrides);
     const topics = createTopicBuilder(config.mqtt.topicPrefix);
     const state = await loadState();
     const saveCurrentState = () => saveState(state);

@@ -74,7 +74,7 @@ test('parseWallpadTimePacket decodes BCD wallpad date and time', () => {
         minute: 19,
         second: 59,
         period: '2026-04',
-        display: '시간: 2026-04-25 02:19',
+        display: '2026-04-25 02:19',
         iso: '2026-04-25T02:19:59+09:00',
     });
 });
@@ -83,7 +83,7 @@ test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for mo
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         wallpadTimeDiscovered: true,
-        wallpadTimeDiscoveryVersion: 2,
+        wallpadTimeDiscoveryVersion: 3,
         rawPacketDiscovered: false,
         lastWallpadTime: null,
     };
@@ -104,19 +104,19 @@ test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for mo
     assert.equal(handled, true);
     assert.equal(lifeInfoState.lastWallpadTime.period, '2026-04');
     assert.equal(saveCount, 1);
-    assert.equal(lifeInfoState.wallpadTimeDiscoveryVersion, 3);
+    assert.equal(lifeInfoState.wallpadTimeDiscoveryVersion, 4);
     const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_wallpad_time/config');
 
     assert.equal(discoveryPayload.device_class, undefined);
     assert.equal(discoveryPayload.entity_category, 'diagnostic');
-    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '시간: 2026-04-25 02:19'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '2026-04-25 02:19'));
 });
 
 test('analyzeAndDiscoverWallpadTime publishes state only when the displayed minute changes', async () => {
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         wallpadTimeDiscovered: true,
-        wallpadTimeDiscoveryVersion: 3,
+        wallpadTimeDiscoveryVersion: 4,
         rawPacketDiscovered: false,
         lastWallpadTime: null,
     };
@@ -131,8 +131,8 @@ test('analyzeAndDiscoverWallpadTime publishes state only when the displayed minu
     const statePublishes = mqttClient.calls.filter((call) => call.topic === 'devcommax/life_info/wallpad_time/state');
 
     assert.deepEqual(statePublishes.map((call) => call.message), [
-        '시간: 2026-04-25 02:19',
-        '시간: 2026-04-25 02:20',
+        '2026-04-25 02:19',
+        '2026-04-25 02:20',
     ]);
 });
 

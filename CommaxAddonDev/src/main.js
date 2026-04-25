@@ -7,6 +7,7 @@ const { createPacketCapture } = require('./packetCapture');
 const { METERING_PACKET_LENGTHS, PRIMARY_PACKET_LENGTHS } = require('./packetFramer');
 const { log, logError } = require('./utils');
 const { loadConfig } = require('./config');
+const { createDiagnostics } = require('./diagnostics');
 const { createTopicBuilder } = require('./topics');
 const {
     analyzeAndDiscoverAirQuality,
@@ -45,6 +46,12 @@ function publishAsync(mqttClient, topic, message, options) {
 
             resolve();
         });
+    });
+}
+
+function reportAsyncError(label, promise) {
+    void promise.catch((err) => {
+        logError(`${label} 실패:`, err);
     });
 }
 
@@ -421,7 +428,7 @@ function createMeteringPacketHandler({ state, mqttClient, topics, saveCurrentSta
     };
 }
 
-function installShutdownHandlers({ mqttClient, primaryClient, meteringClient, availabilityController, saveCurrentState, packetMonitor, packetCapture }) {
+function installShutdownHandlers({ mqttClient, primaryClient, meteringClient, availabilityController, diagnostics, saveCurrentState, packetMonitor, packetCapture }) {
     let isShuttingDown = false;
 
     async function runShutdownStep(label, action, errors) {
@@ -445,6 +452,7 @@ function installShutdownHandlers({ mqttClient, primaryClient, meteringClient, av
 
         await runShutdownStep('패킷 모니터', () => packetMonitor.stop(), errors);
         await runShutdownStep('알 수 없는 패킷 캡처', () => packetCapture.flush(), errors);
+        await runShutdownStep('진단 상태 publish', () => diagnostics.setAllDisconnected(), errors);
         await runShutdownStep('availability publish', () => availabilityController.setAllUnavailable(), errors);
         await runShutdownStep('상태 저장', saveCurrentState, errors);
         await runShutdownStep('MQTT 연결', () => mqttClient.end(), errors);
@@ -485,6 +493,12 @@ async function main() {
     });
 
     const availabilityController = createAvailabilityController(state, mqttClient, topics);
+    const diagnostics = createDiagnostics({
+        mqttClient,
+        topics,
+        includeMetering: Boolean(config.metering.host),
+    });
+    reportAsyncError('진단 discovery 발행', diagnostics.publishDiscovery());
 
     let primaryClient;
     const packetMonitor = createPacketIntervalMonitor(commandHandler, () => primaryClient?.socket);
@@ -505,11 +519,20 @@ async function main() {
         }),
         writeCommand: (command) => commandHandler.safeWrite(command, primaryClient?.socket),
         onUnknownPacket: (packet) => packetCapture.record(packet),
+        onReceive: (receivedAt) => {
+            reportAsyncError('메인 EW11 마지막 수신 시간 발행', diagnostics.recordEw11Receive('primary', receivedAt));
+        },
         packetLengths: PRIMARY_PACKET_LENGTHS,
         state,
         mqttClient,
-        onAvailable: () => availabilityController.setPrimaryAvailable(),
-        onUnavailable: () => availabilityController.setPrimaryUnavailable(),
+        onAvailable: () => Promise.all([
+            diagnostics.setEw11Connected('primary', true),
+            availabilityController.setPrimaryAvailable(),
+        ]),
+        onUnavailable: () => Promise.all([
+            diagnostics.setEw11Connected('primary', false),
+            availabilityController.setPrimaryUnavailable(),
+        ]),
     });
 
     let meteringClient = null;
@@ -529,11 +552,20 @@ async function main() {
             }),
             writeCommand: (command) => commandHandler.safeWrite(command, meteringClient?.socket),
             onUnknownPacket: (packet) => packetCapture.record(packet),
+            onReceive: (receivedAt) => {
+                reportAsyncError('검침 EW11 마지막 수신 시간 발행', diagnostics.recordEw11Receive('metering', receivedAt));
+            },
             packetLengths: METERING_PACKET_LENGTHS,
             state,
             mqttClient,
-            onAvailable: () => availabilityController.setMeteringAvailable(),
-            onUnavailable: () => availabilityController.setMeteringUnavailable(),
+            onAvailable: () => Promise.all([
+                diagnostics.setEw11Connected('metering', true),
+                availabilityController.setMeteringAvailable(),
+            ]),
+            onUnavailable: () => Promise.all([
+                diagnostics.setEw11Connected('metering', false),
+                availabilityController.setMeteringUnavailable(),
+            ]),
         });
     }
 
@@ -544,6 +576,7 @@ async function main() {
         primaryClient,
         meteringClient,
         availabilityController,
+        diagnostics,
         saveCurrentState,
         packetMonitor,
         packetCapture,

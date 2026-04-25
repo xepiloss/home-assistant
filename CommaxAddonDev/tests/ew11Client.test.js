@@ -20,6 +20,7 @@ test('handleIncomingData bypasses packet framing when disabled', () => {
     const rawFrame = Buffer.from([0x57, 0x00, 0x00, 0x00, 0x00, 0x01, 0x8A]);
     const client = {
         usePacketFramer: false,
+        onReceive: () => undefined,
         onDataCallback: (bytes) => received.push(bytes),
     };
 
@@ -42,6 +43,7 @@ test('handleIncomingData reports dropped bytes to unknown packet capture', () =>
         },
         logUnknownPackets: false,
         name: '메인 EW11',
+        onReceive: () => undefined,
         onDataCallback() {},
         onUnknownPacket: (packet) => captured.push(packet),
     };

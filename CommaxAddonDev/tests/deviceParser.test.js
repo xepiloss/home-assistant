@@ -85,7 +85,7 @@ test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for mo
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         wallpadTimeDiscovered: true,
-        wallpadTimeDiscoveryVersion: 3,
+        wallpadTimeDiscoveryVersion: 4,
         rawPacketDiscovered: false,
         lastWallpadTime: null,
     };
@@ -106,11 +106,12 @@ test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for mo
     assert.equal(handled, true);
     assert.equal(lifeInfoState.lastWallpadTime.period, '2026-04');
     assert.equal(saveCount, 1);
-    assert.equal(lifeInfoState.wallpadTimeDiscoveryVersion, 4);
+    assert.equal(lifeInfoState.wallpadTimeDiscoveryVersion, 5);
     const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_wallpad_time/config');
 
     assert.equal(discoveryPayload.device_class, undefined);
     assert.equal(discoveryPayload.entity_category, 'diagnostic');
+    assert.equal(discoveryPayload.enabled_by_default, false);
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '2026-04-25 02:19'));
 });
 
@@ -118,7 +119,7 @@ test('analyzeAndDiscoverWallpadTime publishes state only when the displayed minu
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         wallpadTimeDiscovered: true,
-        wallpadTimeDiscoveryVersion: 4,
+        wallpadTimeDiscoveryVersion: 5,
         rawPacketDiscovered: false,
         lastWallpadTime: null,
     };

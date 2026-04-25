@@ -312,6 +312,33 @@ test('analyzeParkingAreaAndCarNumber filters car number fragments while allowing
     assert(paddedShortMqttClient.calls.some((call) => call.topic === 'devcommax/parking/car_number' && call.message === 'A1'));
 });
 
+test('analyzeParkingAreaAndCarNumber publishes car number from long parking frame', () => {
+    const topics = createTopicBuilder('devcommax');
+    const parkingState = {
+        parkingDiscovered: true,
+        carNumberDiscovered: true,
+        iconDiscoveryVersion: 2,
+    };
+    const mqttClient = createMqttStub();
+
+    analyzeParkingAreaAndCarNumber(
+        [
+            0x2A, 0x00, 0x00, 0xBD, 0xC2, 0xB1, 0xAD, 0xC3,
+            0xB5, 0xB4, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+            0xC2, 0xB2, 0xAE, 0xF0, 0xEE, 0xE7, 0x80, 0x80,
+            0x80, 0x80, 0x80, 0x80, 0xB4, 0xB2, 0xB9, 0x80,
+            0x80, 0xB2, 0xB7, 0xB6, 0x80, 0x80, 0xB5, 0xB4,
+            0xB4, 0xB4, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+        ],
+        parkingState,
+        mqttClient,
+        { topics }
+    );
+
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/parking/area' && call.message === 'B1-C54'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/parking/car_number' && call.message === '5444'));
+});
+
 test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', async () => {
     const mqttClient = createMqttStub();
     const discoveredMeters = new Set();

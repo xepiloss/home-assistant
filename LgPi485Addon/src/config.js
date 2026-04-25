@@ -11,6 +11,8 @@ const ENV_TO_OPTION = Object.freeze({
     MQTT_PASSWORD: 'mqtt_password',
     EW11_HOST: 'ew11_host',
     EW11_PORT: 'ew11_port',
+    LG_PI485_EW11_EXIT_ON_MAX_RETRIES: 'ew11_exit_on_max_retries',
+    LG_PI485_EW11_MAX_RETRY_ATTEMPTS: 'ew11_max_retry_attempts',
     LG_PI485_TX_BYTE_0: 'tx_byte_0',
     LG_PI485_REQUEST_ID: 'request_id',
     LG_PI485_INDOOR_UNITS: 'indoor_units',
@@ -40,6 +42,8 @@ const DEFAULT_CONFIG = Object.freeze({
     ew11: {
         host: '',
         port: 8899,
+        exitOnMaxRetries: true,
+        maxRetryAttempts: 20,
     },
     protocol: {
         txByte0: 0x80,
@@ -145,6 +149,8 @@ function normalizeConfig(raw = {}) {
         ew11: {
             host: raw.ew11_host || DEFAULT_CONFIG.ew11.host,
             port: parseInteger(raw.ew11_port, DEFAULT_CONFIG.ew11.port, { min: 1 }),
+            exitOnMaxRetries: parseBoolean(raw.ew11_exit_on_max_retries, DEFAULT_CONFIG.ew11.exitOnMaxRetries),
+            maxRetryAttempts: parseInteger(raw.ew11_max_retry_attempts, DEFAULT_CONFIG.ew11.maxRetryAttempts, { min: 1 }),
         },
         protocol: {
             txByte0: parseByte(raw.tx_byte_0, DEFAULT_CONFIG.protocol.txByte0),

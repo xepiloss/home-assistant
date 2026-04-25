@@ -19,10 +19,15 @@ class Ew11Client {
         mqttClient,
         onAvailable,
         onUnavailable,
+        onMaxRetriesReached,
         onUnknownPacket,
         onReceive,
         packetLengths,
         usePacketFramer = true,
+        maxRetryAttempts = 20,
+        reconnectDelay = 30000,
+        logger = log,
+        errorLogger = logError,
     }) {
         this.name = name;
         this.host = host;
@@ -33,13 +38,16 @@ class Ew11Client {
         this.mqttClient = mqttClient;
         this.onAvailable = onAvailable;
         this.onUnavailable = onUnavailable;
+        this.onMaxRetriesReached = onMaxRetriesReached || (() => undefined);
         this.onUnknownPacket = onUnknownPacket || (() => undefined);
         this.onReceive = onReceive || (() => undefined);
         this.usePacketFramer = usePacketFramer;
         this.packetFramer = usePacketFramer ? new PacketFramer({ packetLengths }) : null;
         this.logUnknownPackets = shouldLogUnknownPackets();
-        this.reconnectDelay = 30000; // 30 seconds
-        this.maxRetryAttempts = 10;
+        this.reconnectDelay = reconnectDelay;
+        this.maxRetryAttempts = maxRetryAttempts;
+        this.logger = logger;
+        this.errorLogger = errorLogger;
         this.retryCount = 0;
         this.connectionTimeout = 30000; // 30 seconds
         this.isConnecting = false;
@@ -62,7 +70,7 @@ class Ew11Client {
         this.isConnecting = true;
 
         this.connectionTimer = setTimeout(() => {
-            logError(`${this.name} connection timeout`);
+            this.errorLogger(`${this.name} connection timeout`);
             this.socket?.destroy();
         }, this.connectionTimeout);
 
@@ -74,22 +82,22 @@ class Ew11Client {
             this.retryCount = 0;
             this.lastDataTime = Date.now();
             this.startConnectionMonitor();
-            log(`${this.name} (${this.host}:${this.port}) 에 연결되었습니다.`);
+            this.logger(`${this.name} (${this.host}:${this.port}) 에 연결되었습니다.`);
         });
 
         this.socket.on('data', (data) => this.handleIncomingData(data));
 
         this.socket.on('error', (err) => {
-            logError(`${this.name} connection error:`, err);
+            this.errorLogger(`${this.name} connection error:`, err);
             this.socket?.destroy();
         });
 
         this.socket.on('close', () => {
             this.clearConnectionTimer();
             this.isConnecting = false;
-            log(`${this.name} connection closed`);
+            this.logger(`${this.name} connection closed`);
             void this.stopConnectionMonitor().catch((err) => {
-                logError(`${this.name} availability shutdown error:`, err);
+                this.errorLogger(`${this.name} availability shutdown error:`, err);
             });
             this.scheduleReconnect();
         });
@@ -108,7 +116,7 @@ class Ew11Client {
 
         if (this.logUnknownPackets) {
             for (const bytes of dropped) {
-                log(`<- ${formatBytes(bytes)} (unknown packet skipped)`);
+                this.logger(`<- ${formatBytes(bytes)} (unknown packet skipped)`);
             }
         }
 
@@ -122,7 +130,7 @@ class Ew11Client {
         }
 
         for (const bytes of recovered) {
-            log(`${this.name} 패킷 복원 성공 : ${formatBytes(bytes)}`);
+            this.logger(`${this.name} 패킷 복원 성공 : ${formatBytes(bytes)}`);
             this.onUnknownPacket({
                 source: this.name,
                 kind: 'recovered_state_frame',
@@ -175,13 +183,13 @@ class Ew11Client {
         this.connectionMonitor = setInterval(() => {
             const now = Date.now();
             if (now - this.lastDataTime > this.dataTimeout) {
-                log(`No data received for ${this.dataTimeout}ms from ${this.name}, triggering reconnect`);
+                this.logger(`No data received for ${this.dataTimeout}ms from ${this.name}, triggering reconnect`);
                 this.socket?.destroy();
             }
         }, 1000);
 
         void this.setAvailability(true).catch((err) => {
-            logError(`${this.name} availability startup error:`, err);
+            this.errorLogger(`${this.name} availability startup error:`, err);
         });
     }
 
@@ -200,12 +208,17 @@ class Ew11Client {
         }
 
         if (this.retryCount >= this.maxRetryAttempts) {
-            logError(`${this.name} max retry attempts reached. Stopping reconnection.`);
+            this.errorLogger(`${this.name} max retry attempts reached. Stopping reconnection.`);
+            this.onMaxRetriesReached({
+                name: this.name,
+                attempts: this.maxRetryAttempts,
+                reconnectDelay: this.reconnectDelay,
+            });
             return;
         }
 
         this.retryCount++;
-        log(`${this.name} reconnect scheduled (${this.retryCount}/${this.maxRetryAttempts}) in ${this.reconnectDelay}ms...`);
+        this.logger(`${this.name} reconnect scheduled (${this.retryCount}/${this.maxRetryAttempts}) in ${this.reconnectDelay}ms...`);
 
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
@@ -217,7 +230,7 @@ class Ew11Client {
         if (this.socket && !this.socket.destroyed) {
             this.writeCommand(command);
         } else {
-            log('Socket is not connected. Command not sent.');
+            this.logger('Socket is not connected. Command not sent.');
         }
     }
 

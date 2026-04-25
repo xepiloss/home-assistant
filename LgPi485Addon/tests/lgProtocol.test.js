@@ -28,6 +28,7 @@ const {
 const {
     normalizeConfig,
 } = require('../src/config');
+const Ew11Client = require('../src/ew11Client');
 const PriorityQueue = require('../src/priorityQueue');
 
 test('checksum matches LG PI485 alternating-bit complement formula', () => {
@@ -416,4 +417,30 @@ test('uses responsive but conservative default polling cadence', () => {
 
     assert.equal(config.pollIntervalMs, 2000);
     assert.equal(config.pollSpacingMs, 150);
+    assert.equal(config.ew11.exitOnMaxRetries, true);
+    assert.equal(config.ew11.maxRetryAttempts, 20);
+});
+
+test('notifies when EW11 reconnect retry limit is reached', () => {
+    const events = [];
+    const client = Object.create(Ew11Client.prototype);
+
+    Object.assign(client, {
+        isDestroyed: false,
+        reconnectTimer: null,
+        retryCount: 20,
+        maxRetryAttempts: 20,
+        reconnectDelay: 30000,
+        name: 'LG PI485 EW11',
+        errorLogger: () => undefined,
+        onMaxRetriesReached: (event) => events.push(event),
+    });
+
+    client.scheduleReconnect();
+
+    assert.deepEqual(events, [{
+        name: 'LG PI485 EW11',
+        attempts: 20,
+        reconnectDelay: 30000,
+    }]);
 });

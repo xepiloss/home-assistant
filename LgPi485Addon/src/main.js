@@ -187,6 +187,8 @@ function installShutdownHandlers({ mqttClient, ew11Client, availabilityControlle
     process.on('SIGTERM', () => {
         void shutdown('SIGTERM');
     });
+
+    return shutdown;
 }
 
 async function main() {
@@ -220,6 +222,7 @@ async function main() {
     reportAsyncError('진단 discovery 발행', diagnostics.publishDiscovery());
 
     let ew11Client;
+    let shutdownAddon = async () => undefined;
     const drainLoop = createDrainLoop({
         commandHandler,
         getSocket: () => ew11Client?.socket,
@@ -256,6 +259,16 @@ async function main() {
             diagnostics.setEw11Connected(false),
             availabilityController.setAllUnavailable(),
         ]),
+        onMaxRetriesReached: ({ attempts, reconnectDelay }) => {
+            const totalSeconds = Math.round((attempts * reconnectDelay) / 1000);
+            if (!config.ew11.exitOnMaxRetries) {
+                log(`LG PI485 EW11 재연결 한도 도달 후에도 애드온을 유지합니다: ${attempts}회, 약 ${totalSeconds}초`);
+                return;
+            }
+
+            void shutdownAddon(`EW11 재연결 한도 도달 (${attempts}회, 약 ${totalSeconds}초)`);
+        },
+        maxRetryAttempts: config.ew11.maxRetryAttempts,
     });
 
     const poller = createPoller({
@@ -269,7 +282,7 @@ async function main() {
     poller.start();
     await availabilityController.setAllAvailable();
 
-    installShutdownHandlers({
+    shutdownAddon = installShutdownHandlers({
         mqttClient,
         ew11Client,
         availabilityController,

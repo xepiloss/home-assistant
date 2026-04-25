@@ -18,6 +18,8 @@ options:
   mqtt_password: ""
   ew11_host: ""
   ew11_port: 8899
+  ew11_exit_on_max_retries: true
+  ew11_max_retry_attempts: 20
   indoor_units: 4
   indoor_unit_ids: "1,2,3,4"
   cooling_only: true
@@ -37,6 +39,8 @@ schema:
   mqtt_password: "password"
   ew11_host: "str"
   ew11_port: "int"
+  ew11_exit_on_max_retries: "bool"
+  ew11_max_retry_attempts: "int"
   indoor_units: "int"
   indoor_unit_ids: "str"
   cooling_only: "bool"

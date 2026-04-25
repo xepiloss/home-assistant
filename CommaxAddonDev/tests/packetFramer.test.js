@@ -109,3 +109,29 @@ test('PacketFramer drops unknown bytes and resyncs to the next known header', ()
     assert.equal(formatBytes(result.dropped[0]), '55 66');
     assert.deepEqual(result.frames, [[...lightFrame]]);
 });
+
+test('PacketFramer recovers a checksum-valid state frame embedded in a misaligned frame', () => {
+    const framer = new PacketFramer();
+    const prefix = Buffer.from([0x04, 0x00, 0x00, 0x00, 0x05, 0xBA]);
+    const lightFrame = Buffer.from([0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6]);
+
+    const result = framer.push(Buffer.concat([prefix, lightFrame]));
+
+    assert.deepEqual(result.frames, [[...lightFrame]]);
+    assert.deepEqual(result.recovered, [[...lightFrame]]);
+    assert.equal(formatBytes(result.dropped[0]), '04 00 00 00 05 BA');
+});
+
+test('PacketFramer preserves an incomplete embedded state frame for the next chunk', () => {
+    const framer = new PacketFramer();
+    const prefix = Buffer.from([0x04, 0x00, 0x00, 0x00, 0x05, 0xBA]);
+    const lightFrame = Buffer.from([0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6]);
+
+    const firstResult = framer.push(Buffer.concat([prefix, lightFrame.subarray(0, 2)]));
+    const secondResult = framer.push(lightFrame.subarray(2));
+
+    assert.deepEqual(firstResult.frames, []);
+    assert.equal(formatBytes(firstResult.dropped[0]), '04 00 00 00 05 BA');
+    assert.deepEqual(secondResult.frames, [[...lightFrame]]);
+    assert.deepEqual(secondResult.dropped, []);
+});

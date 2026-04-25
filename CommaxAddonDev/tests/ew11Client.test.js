@@ -55,3 +55,32 @@ test('handleIncomingData reports dropped bytes to unknown packet capture', () =>
     assert.equal(captured[0].kind, 'dropped_bytes');
     assert.deepEqual(captured[0].bytes, [0x57, 0x00, 0x00]);
 });
+
+test('handleIncomingData reports recovered state frames to unknown packet capture', () => {
+    const captured = [];
+    const frames = [];
+    const client = {
+        usePacketFramer: true,
+        packetFramer: {
+            push() {
+                return {
+                    frames: [[0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6]],
+                    dropped: [[0x04, 0x00, 0x00, 0x00, 0x05, 0xBA]],
+                    recovered: [[0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6]],
+                };
+            },
+        },
+        logUnknownPackets: false,
+        name: '메인 EW11',
+        onReceive: () => undefined,
+        onDataCallback: (bytes) => frames.push(bytes),
+        onUnknownPacket: (packet) => captured.push(packet),
+    };
+
+    Ew11Client.prototype.handleIncomingData.call(client, Buffer.from([0x04]));
+
+    assert.equal(captured.length, 2);
+    assert.equal(captured[0].kind, 'dropped_bytes');
+    assert.equal(captured[1].kind, 'recovered_state_frame');
+    assert.deepEqual(frames, [[0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6]]);
+});

@@ -104,7 +104,7 @@ class Ew11Client {
             return;
         }
 
-        const { frames, dropped } = this.packetFramer.push(data);
+        const { frames, dropped, recovered = [] } = this.packetFramer.push(data);
 
         if (this.logUnknownPackets) {
             for (const bytes of dropped) {
@@ -118,6 +118,15 @@ class Ew11Client {
                 kind: 'dropped_bytes',
                 bytes,
                 note: 'Packet framer dropped bytes while resyncing to a known header.',
+            });
+        }
+
+        for (const bytes of recovered) {
+            this.onUnknownPacket({
+                source: this.name,
+                kind: 'recovered_state_frame',
+                bytes,
+                note: 'Packet framer recovered a checksum-valid state frame from a misaligned byte stream.',
             });
         }
 

@@ -295,7 +295,7 @@ test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', as
     assert.equal(isMeteringPacket(frame), true);
     assert.equal(handled, true);
     assert(discoveredMeters.has('commax_metering'));
-    assert(discoveredMeters.has('commax_metering_icons_v2'));
+    assert(discoveredMeters.has('commax_metering_realtime_classes_v3'));
     assert(discoveredMeters.has('commax_metering_monthly'));
     assert(discoveredMeters.has('commax_metering_monthly_icons_v2'));
     assert(saveCount >= 2);

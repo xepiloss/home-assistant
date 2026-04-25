@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.12-dev - 2026-04-25
+
+### Fixed
+
+- 기존 상태 파일에 검침 discovery 완료 기록이 있어도 실시간 검침 sensor discovery가 다시 발행되도록 discovery 버전 키를 갱신했습니다.
+
 ## 1.1.11-dev - 2026-04-25
 
 ### Fixed

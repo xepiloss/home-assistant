@@ -85,7 +85,7 @@ test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for mo
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         wallpadTimeDiscovered: true,
-        wallpadTimeDiscoveryVersion: 3,
+        wallpadTimeDiscoveryVersion: 4,
         rawPacketDiscovered: false,
         lastWallpadTime: null,
     };
@@ -106,11 +106,12 @@ test('analyzeAndDiscoverWallpadTime publishes readable text and stores it for mo
     assert.equal(handled, true);
     assert.equal(lifeInfoState.lastWallpadTime.period, '2026-04');
     assert.equal(saveCount, 1);
-    assert.equal(lifeInfoState.wallpadTimeDiscoveryVersion, 4);
+    assert.equal(lifeInfoState.wallpadTimeDiscoveryVersion, 5);
     const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_wallpad_time/config');
 
     assert.equal(discoveryPayload.device_class, undefined);
     assert.equal(discoveryPayload.entity_category, 'diagnostic');
+    assert.equal(discoveryPayload.enabled_by_default, false);
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/wallpad_time/state' && call.message === '2026-04-25 02:19'));
 });
 
@@ -118,7 +119,7 @@ test('analyzeAndDiscoverWallpadTime publishes state only when the displayed minu
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         wallpadTimeDiscovered: true,
-        wallpadTimeDiscoveryVersion: 4,
+        wallpadTimeDiscoveryVersion: 5,
         rawPacketDiscovered: false,
         lastWallpadTime: null,
     };
@@ -295,16 +296,23 @@ test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', as
     assert.equal(isMeteringPacket(frame), true);
     assert.equal(handled, true);
     assert(discoveredMeters.has('commax_metering'));
-    assert(discoveredMeters.has('commax_metering_icons_v2'));
+    assert(discoveredMeters.has('commax_metering_realtime_classes_v3'));
     assert(discoveredMeters.has('commax_metering_monthly'));
     assert(discoveredMeters.has('commax_metering_monthly_icons_v2'));
     assert(saveCount >= 2);
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_electric_meter/config'));
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_electric_monthly_meter/config'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/water_meter/state' && call.message === '0'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/gas_meter/state' && call.message === '0'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/warm_meter/state' && call.message === '0'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/water_acc_meter/state' && call.message === '60.1'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/electric_meter/state' && call.message === '314'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/electric_acc_meter/state' && call.message === '4431.7'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/electric_monthly_meter/state' && call.message === '131.7'));
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_water_meter/config').device_class, 'volume_flow_rate');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_water_meter/config').state_class, 'measurement');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_gas_meter/config').device_class, 'volume_flow_rate');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_warm_meter/config').device_class, 'volume_flow_rate');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_gas_meter/config').icon, 'mdi:fire');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_heat_meter/config').icon, 'mdi:radiator');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_electric_monthly_meter/config').icon, 'mdi:flash');

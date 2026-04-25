@@ -1,6 +1,6 @@
 name: "Commax Wallpad"
 description: "코맥스 애드온 TCP Socket Ver"
-version: "1.1.1"
+version: "1.1.2"
 slug: "commax_wallpad"
 url: "https://github.com/xepiloss/home-assistant"
 init: false

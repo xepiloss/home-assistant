@@ -20,6 +20,7 @@ class Ew11Client {
         onAvailable,
         onUnavailable,
         onUnknownPacket,
+        onReceive,
         packetLengths,
         usePacketFramer = true,
     }) {
@@ -33,6 +34,7 @@ class Ew11Client {
         this.onAvailable = onAvailable;
         this.onUnavailable = onUnavailable;
         this.onUnknownPacket = onUnknownPacket || (() => undefined);
+        this.onReceive = onReceive || (() => undefined);
         this.usePacketFramer = usePacketFramer;
         this.packetFramer = usePacketFramer ? new PacketFramer({ packetLengths }) : null;
         this.logUnknownPackets = shouldLogUnknownPackets();
@@ -95,6 +97,7 @@ class Ew11Client {
 
     handleIncomingData(data) {
         this.lastDataTime = Date.now();
+        this.onReceive(new Date(this.lastDataTime));
 
         if (!this.usePacketFramer) {
             this.onDataCallback([...Buffer.from(data)]);

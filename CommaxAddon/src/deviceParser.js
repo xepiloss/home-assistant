@@ -43,7 +43,8 @@ const METERING_SENSORS = [
         name: '실시간 수도 사용량',
         uniqueId: 'commax_water_meter',
         unit: 'm³/h',
-        deviceClass: 'water',
+        deviceClass: 'volume_flow_rate',
+        stateClass: 'measurement',
         icon: 'mdi:water-pump',
     },
     {
@@ -52,6 +53,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_electric_meter',
         unit: 'W',
         deviceClass: 'power',
+        stateClass: 'measurement',
         icon: 'mdi:flash',
     },
     {
@@ -59,7 +61,8 @@ const METERING_SENSORS = [
         name: '실시간 온수 사용량',
         uniqueId: 'commax_warm_meter',
         unit: 'm³/h',
-        deviceClass: 'water',
+        deviceClass: 'volume_flow_rate',
+        stateClass: 'measurement',
         icon: 'mdi:water-thermometer',
     },
     {
@@ -68,6 +71,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_heat_meter',
         unit: 'kW',
         deviceClass: 'power',
+        stateClass: 'measurement',
         icon: 'mdi:radiator',
     },
     {
@@ -75,7 +79,8 @@ const METERING_SENSORS = [
         name: '실시간 가스 사용량',
         uniqueId: 'commax_gas_meter',
         unit: 'm³/h',
-        deviceClass: 'water',
+        deviceClass: 'volume_flow_rate',
+        stateClass: 'measurement',
         icon: 'mdi:fire',
     },
     {
@@ -121,11 +126,11 @@ const METERING_SENSORS = [
 ];
 
 const METERING_DISCOVERY_ID = 'commax_metering';
-const METERING_ICON_DISCOVERY_ID = 'commax_metering_icons_v2';
+const METERING_ICON_DISCOVERY_ID = 'commax_metering_realtime_classes_v3';
 const MONTHLY_METERING_DISCOVERY_ID = 'commax_metering_monthly';
 const MONTHLY_METERING_ICON_DISCOVERY_ID = 'commax_metering_monthly_icons_v2';
 const PARKING_ICON_DISCOVERY_VERSION = 2;
-const WALLPAD_TIME_DISCOVERY_VERSION = 4;
+const WALLPAD_TIME_DISCOVERY_VERSION = 5;
 const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';
 const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
 const LIFE_INFO_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_temperature';
@@ -917,6 +922,7 @@ function analyzeAndDiscoverWallpadTime(bytes, lifeInfoState, mqttClient, options
             payload_available: 'available',
             payload_not_available: 'unavailable',
             entity_category: 'diagnostic',
+            enabled_by_default: false,
             icon: 'mdi:clock-time-four-outline',
             device: cloneDeviceInfo(),
         };
@@ -1294,6 +1300,7 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, options
                 payload_not_available: 'unavailable',
                 unit_of_measurement: sensor.unit,
                 device_class: sensor.deviceClass,
+                state_class: sensor.stateClass,
                 device: cloneDeviceInfo(),
             }, sensor);
 

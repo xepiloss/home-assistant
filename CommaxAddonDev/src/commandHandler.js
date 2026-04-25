@@ -5,7 +5,7 @@ const { calculateChecksum } = require('./deviceParser');
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_TIMEOUT_MS = 400;
 const SUPPORTED_TOPIC_ACTIONS = new Set(['set', 'call', 'set_mode', 'set_temp', 'set_speed']);
-const DEVICE_ID_PREFIX_PATTERN = /^(outlet_|light_|temp_)/;
+const DEVICE_ID_PREFIX_PATTERN = /^(outlet_|light_|temp_|elevator_)/;
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 
 function shouldLogMqttCommands(env = process.env) {
@@ -29,6 +29,30 @@ function formatHex(bufferOrBytes) {
         .map((byte) => byte.toString(16).padStart(2, '0'))
         .join(' ')
         .toUpperCase();
+}
+
+function toBuffer(frame) {
+    if (!frame) {
+        return null;
+    }
+
+    if (Buffer.isBuffer(frame)) {
+        return Buffer.from(frame);
+    }
+
+    if (Array.isArray(frame)) {
+        return Buffer.from(frame);
+    }
+
+    if (Array.isArray(frame.bytes)) {
+        return Buffer.from(frame.bytes);
+    }
+
+    return null;
+}
+
+function toHexKey(bufferOrBytes) {
+    return Buffer.from(bufferOrBytes).toString('hex');
 }
 
 function encodeDecimalDigitsToByte(value) {
@@ -154,16 +178,37 @@ function formatResponseTime(commandEntry, now = Date.now()) {
 }
 
 class CommandHandler {
-    constructor({ topicPrefix, env = process.env, logger = log }) {
+    constructor({ topicPrefix, env = process.env, logger = log, elevator = {} }) {
         this.topicPrefix = topicPrefix;
         this.priorityQueue = new PriorityQueue();
         this.lastMqttCommandAt = 0;
         this.logMqttCommands = shouldLogMqttCommands(env);
         this.retryConfig = readRetryConfig(env);
         this.logger = logger;
+        this.elevator = this.normalizeElevatorConfig(elevator);
         this.commandMetadata = new Map();
         this.deferredCommands = new Map();
         this.nextCommandId = 1;
+    }
+
+    normalizeElevatorConfig(elevator = {}) {
+        const frames = {
+            callOn: toBuffer(elevator.frames?.callOn),
+            calling: toBuffer(elevator.frames?.calling),
+            released: toBuffer(elevator.frames?.released),
+        };
+
+        return {
+            mode: ['off', 'rs485'].includes(elevator.mode) ? elevator.mode : 'mqtt',
+            deviceId: elevator.deviceId || '01',
+            callCommand: toBuffer(elevator.callCommand),
+            frames,
+            frameKeys: {
+                callOn: frames.callOn ? toHexKey(frames.callOn) : '',
+                calling: frames.calling ? toHexKey(frames.calling) : '',
+                released: frames.released ? toHexKey(frames.released) : '',
+            },
+        };
     }
 
     safeWrite(command, socket) {
@@ -188,8 +233,8 @@ class CommandHandler {
             command,
             priority,
             retries: 0,
-            deviceType: this.getDeviceTypeFromCommand(command),
-            deviceId: command[1].toString(16).padStart(2, '0'),
+            deviceType: options.deviceType || this.getDeviceTypeFromCommand(command),
+            deviceId: options.deviceId || command[1].toString(16).padStart(2, '0'),
             hexKey: command.toString('hex'),
             supersedeKey: options.supersedeKey || null,
             sentAt: null,
@@ -391,6 +436,8 @@ class CommandHandler {
                 return this.matchesTemperatureAck(command, bytes);
             case 'fan':
                 return this.matchesFanAck(command, bytes);
+            case 'elevator':
+                return this.matchesElevatorAck(bytes);
             case 'master_light':
                 return bytes[1] === command[2];
             default:
@@ -441,6 +488,11 @@ class CommandHandler {
         return true;
     }
 
+    matchesElevatorAck(bytes) {
+        const frameKind = this.getElevatorFrameKind(bytes);
+        return frameKind === 'callOn' || frameKind === 'calling';
+    }
+
     matchesFanAck(command, bytes) {
         const commandType = command[2];
         const value = command[3];
@@ -480,11 +532,15 @@ class CommandHandler {
     }
 
     handleAckOrState(bytes) {
+        const elevatorFrameKind = this.getElevatorFrameKind(bytes);
         const header = bytes[0];
         let deviceType;
         let deviceId;
 
-        switch (header) {
+        if (elevatorFrameKind) {
+            deviceType = 'elevator';
+            deviceId = this.getElevatorDeviceIdFromFrame(bytes);
+        } else switch (header) {
             case 0xF9:
             case 0xFA:
                 deviceType = 'outlet';
@@ -525,6 +581,36 @@ class CommandHandler {
 
         log(`<- ${formatStateFrameLog(bytes)} ACK/STATE 수신 완료 (${formatResponseTime(pendingCommand)})`);
         this.removeCommand(pendingCommand.id);
+    }
+
+    getElevatorFrameKind(bytes) {
+        const hexKey = toHexKey(bytes);
+
+        if (hexKey === this.elevator.frameKeys.callOn) {
+            return 'callOn';
+        }
+
+        if (hexKey === this.elevator.frameKeys.calling) {
+            return 'calling';
+        }
+
+        if (hexKey === this.elevator.frameKeys.released) {
+            return 'released';
+        }
+
+        return '';
+    }
+
+    getElevatorDeviceIdFromFrame(bytes) {
+        if (bytes[0] === 0x26 && bytes.length > 2) {
+            return byteToHex(bytes[2]);
+        }
+
+        if (bytes.length > 1) {
+            return byteToHex(bytes[1]);
+        }
+
+        return this.elevator.deviceId;
     }
 
     dequeueAndWrite(socket) {
@@ -597,18 +683,8 @@ class CommandHandler {
     }
 
     createElevatorCallCommand(deviceId) {
-        const bytes = [
-            0xA0,
-            Number.parseInt(deviceId, 16),
-            0x01,
-            0x00,
-            0x28,
-            0xD7,
-            0x00,
-        ];
-
-        bytes.push(calculateChecksum(bytes));
-        return Buffer.from(bytes);
+        void deviceId;
+        return this.elevator.callCommand ? Buffer.from(this.elevator.callCommand) : null;
     }
 
     createMasterLightCommand(deviceId, state) {
@@ -756,6 +832,37 @@ class CommandHandler {
         });
     }
 
+    handleElevatorMessage(topicParts, payload) {
+        const action = topicParts.at(-1);
+        if (!['set', 'call'].includes(action) || payload !== 'ON') {
+            return;
+        }
+
+        const deviceId = this.extractDeviceId(topicParts[2]) || this.elevator.deviceId;
+
+        if (this.elevator.mode === 'off') {
+            log(`엘리베이터 ${deviceId} 호출 비활성 모드: 명령을 처리하지 않습니다.`);
+            return;
+        }
+
+        if (this.elevator.mode !== 'rs485') {
+            log(`엘리베이터 ${deviceId} 호출 MQTT 전달 모드: RS485 명령을 보내지 않습니다.`);
+            return;
+        }
+
+        const command = this.createElevatorCallCommand(deviceId);
+        if (!command) {
+            logError(`엘리베이터 ${deviceId} RS485 호출 명령이 설정되지 않았거나 유효하지 않아 명령을 보내지 않습니다.`);
+            return;
+        }
+
+        this.sendCommand(command, 1, {
+            deviceType: 'elevator',
+            deviceId,
+            supersedeKey: `elevator:${deviceId}:call`,
+        });
+    }
+
     handleMessage(topic, message, mqttClient) {
         const topicParts = topic.split('/');
         const payload = message.toString();
@@ -781,6 +888,7 @@ class CommandHandler {
                 this.handleFanMessage(topicParts, payload, mqttClient);
                 break;
             case 'elevator':
+                this.handleElevatorMessage(topicParts, payload, mqttClient);
                 break;
             case 'master_light':
                 if (action === 'set') {

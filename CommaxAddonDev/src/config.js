@@ -21,7 +21,14 @@ const ENV_TO_OPTION = Object.freeze({
     COMMAX_MONTHLY_GAS_USAGE: 'monthly_gas_usage',
     COMMAX_UNKNOWN_PACKET_CAPTURE_ENABLED: 'unknown_packet_capture_enabled',
     COMMAX_UNKNOWN_PACKET_CAPTURE_PATH: 'unknown_packet_capture_path',
+    COMMAX_ELEVATOR_MODE: 'elevator_mode',
+    COMMAX_ELEVATOR_RS485_CALL_COMMAND: 'elevator_rs485_call_command',
+    COMMAX_ELEVATOR_RS485_CALL_ON_FRAME: 'elevator_rs485_call_on_frame',
+    COMMAX_ELEVATOR_RS485_CALLING_FRAME: 'elevator_rs485_calling_frame',
+    COMMAX_ELEVATOR_RS485_RELEASED_FRAME: 'elevator_rs485_released_frame',
 });
+
+const ELEVATOR_MODES = Object.freeze(['off', 'mqtt', 'rs485']);
 
 const DEFAULT_CONFIG = Object.freeze({
     mqtt: {
@@ -42,6 +49,14 @@ const DEFAULT_CONFIG = Object.freeze({
     packetCapture: {
         enabled: false,
         path: '/share/commax_unknown_packets.jsonl',
+    },
+    elevator: {
+        mode: 'mqtt',
+        deviceId: '01',
+        callCommand: 'A0 01 01 00 08 D7 00 81',
+        callOnFrame: '22 01 40 07 00 00 00 6A',
+        callingFrame: '26 01 01 42 00 01 05 70',
+        releasedFrame: '26 01 01 00 00 00 00 28',
     },
 });
 
@@ -90,6 +105,97 @@ function parseBoolean(value, fallback = false) {
     return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function formatHexBytes(bytes) {
+    return bytes
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join(' ')
+        .toUpperCase();
+}
+
+function parseHexFrame(value, fallback = '') {
+    const rawValue = value === undefined || value === null || value === ''
+        ? fallback
+        : String(value).trim();
+
+    if (!rawValue) {
+        return {
+            hex: '',
+            bytes: [],
+            invalid: '',
+        };
+    }
+
+    const compact = String(rawValue).replace(/\s+/g, '').toUpperCase();
+    if (!/^[0-9A-F]+$/.test(compact) || compact.length !== 16) {
+        return {
+            hex: '',
+            bytes: [],
+            invalid: String(rawValue).trim(),
+        };
+    }
+
+    const bytes = compact.match(/.{2}/g).map((byte) => Number.parseInt(byte, 16));
+    const checksum = bytes.slice(0, 7).reduce((sum, byte) => sum + byte, 0) & 0xFF;
+    if (bytes[7] !== checksum) {
+        return {
+            hex: '',
+            bytes: [],
+            invalid: String(rawValue).trim(),
+        };
+    }
+
+    return {
+        hex: formatHexBytes(bytes),
+        bytes,
+        invalid: '',
+    };
+}
+
+function normalizeElevatorMode(value) {
+    const mode = String(value || DEFAULT_CONFIG.elevator.mode).trim().toLowerCase();
+    return ELEVATOR_MODES.includes(mode) ? mode : DEFAULT_CONFIG.elevator.mode;
+}
+
+function normalizeElevatorConfig(raw = {}) {
+    const callCommand = parseHexFrame(
+        raw.elevator_rs485_call_command,
+        DEFAULT_CONFIG.elevator.callCommand
+    );
+    const callOnFrame = parseHexFrame(
+        raw.elevator_rs485_call_on_frame,
+        DEFAULT_CONFIG.elevator.callOnFrame
+    );
+    const callingFrame = parseHexFrame(
+        raw.elevator_rs485_calling_frame,
+        DEFAULT_CONFIG.elevator.callingFrame
+    );
+    const releasedFrame = parseHexFrame(
+        raw.elevator_rs485_released_frame,
+        DEFAULT_CONFIG.elevator.releasedFrame
+    );
+
+    return {
+        mode: normalizeElevatorMode(raw.elevator_mode),
+        deviceId: DEFAULT_CONFIG.elevator.deviceId,
+        callCommand,
+        frames: {
+            callOn: callOnFrame,
+            calling: callingFrame,
+            released: releasedFrame,
+        },
+        invalid: {
+            mode: raw.elevator_mode !== undefined
+                && !ELEVATOR_MODES.includes(String(raw.elevator_mode).trim().toLowerCase())
+                ? String(raw.elevator_mode).trim()
+                : '',
+            callCommand: callCommand.invalid,
+            callOnFrame: callOnFrame.invalid,
+            callingFrame: callingFrame.invalid,
+            releasedFrame: releasedFrame.invalid,
+        },
+    };
+}
+
 function normalizeMonthlyMeteringUsageOverrides(raw = {}) {
     const rawPeriod = raw.monthly_metering_usage_period;
     const period = parseMonthlyMeteringPeriod(rawPeriod);
@@ -133,6 +239,7 @@ function normalizeConfig(raw = {}) {
             enabled: parseBoolean(raw.unknown_packet_capture_enabled, DEFAULT_CONFIG.packetCapture.enabled),
             path: raw.unknown_packet_capture_path || DEFAULT_CONFIG.packetCapture.path,
         },
+        elevator: normalizeElevatorConfig(raw),
     };
 }
 
@@ -177,6 +284,8 @@ module.exports = {
     OPTIONS_PATH,
     loadConfig,
     normalizeConfig,
+    normalizeElevatorConfig,
+    parseHexFrame,
     normalizeMonthlyMeteringUsageOverrides,
     parseBoolean,
     parseMonthlyMeteringPeriod,

@@ -204,6 +204,26 @@ function formatBytes(bytes) {
     return bytes.map((byte) => byteToHex(byte).toUpperCase()).join(' ');
 }
 
+function compactFrameHex(bytesOrFrame) {
+    if (!bytesOrFrame) {
+        return '';
+    }
+
+    if (Array.isArray(bytesOrFrame)) {
+        return bytesOrFrame.map(byteToHex).join('').toUpperCase();
+    }
+
+    if (Array.isArray(bytesOrFrame.bytes)) {
+        return compactFrameHex(bytesOrFrame.bytes);
+    }
+
+    if (typeof bytesOrFrame.hex === 'string') {
+        return bytesOrFrame.hex.replace(/\s+/g, '').toUpperCase();
+    }
+
+    return '';
+}
+
 function decodeBcdString(bytes) {
     return bytes.map(byteToHex).join('');
 }
@@ -737,39 +757,141 @@ function analyzeAndDiscoverVentilation(bytes, discoveredFans, mqttClient, option
     publishRetained(mqttClient, topics.path('fan', deviceId, 'speed'), speedStr);
 }
 
-function analyzeAndDiscoverElevator(bytes, discoveredElevators, mqttClient, options = {}) {
-    const { saveState, topics } = buildContext(options);
-    const elevatorId = '01';
-    const uniqueId = `commax_elevator_${elevatorId}`;
+function getElevatorFrameKind(bytes, elevatorConfig = {}) {
+    const frameKey = compactFrameHex(bytes);
+    const frames = elevatorConfig.frames || {};
 
-    if (!discoveredElevators.has(uniqueId)) {
-        publishRetained(mqttClient, topics.path('elevator', elevatorId, 'status'), 'OFF');
-
-        const switchConfig = {
-            name: '엘레베이터',
-            unique_id: `${uniqueId}_switch`,
-            command_topic: topics.path('elevator', elevatorId, 'set'),
-            state_topic: topics.path('elevator', elevatorId, 'status'),
-            availability_topic: topics.availability('elevator', elevatorId),
-            payload_available: 'available',
-            payload_not_available: 'unavailable',
-            device: cloneDeviceInfo(),
-        };
-
-        publishDiscovery(
-            mqttClient,
-            topics.discovery('switch', `${uniqueId}_switch`),
-            switchConfig,
-            async () => {
-                discoveredElevators.add(uniqueId);
-                await saveState();
-                publishAvailability(mqttClient, topics.availability('elevator', elevatorId), 'available');
-            },
-            'Failed to publish elevator discovery:'
-        );
+    if (frameKey && frameKey === compactFrameHex(frames.callOn)) {
+        return 'callOn';
     }
 
-    void bytes;
+    if (frameKey && frameKey === compactFrameHex(frames.calling)) {
+        return 'calling';
+    }
+
+    if (frameKey && frameKey === compactFrameHex(frames.released)) {
+        return 'released';
+    }
+
+    return '';
+}
+
+function getElevatorDeviceIdFromFrame(bytes, elevatorConfig = {}) {
+    if (elevatorConfig.deviceId) {
+        return elevatorConfig.deviceId;
+    }
+
+    if (bytes[0] === 0x26 && bytes.length > 2) {
+        return byteToHex(bytes[2]);
+    }
+
+    if (bytes.length > 1) {
+        return byteToHex(bytes[1]);
+    }
+
+    return '01';
+}
+
+function getElevatorStatusFromFrameKind(frameKind) {
+    if (frameKind === 'callOn' || frameKind === 'calling') {
+        return 'ON';
+    }
+
+    if (frameKind === 'released') {
+        return 'OFF';
+    }
+
+    return '';
+}
+
+function publishElevatorDiscovery(discoveredElevators, mqttClient, options = {}) {
+    const { saveState, topics } = buildContext(options);
+    const elevatorConfig = options.elevator || {};
+    if (elevatorConfig.mode === 'off') {
+        return false;
+    }
+
+    const elevatorId = elevatorConfig.deviceId || '01';
+    const uniqueId = `commax_elevator_${elevatorId}`;
+
+    if (discoveredElevators.has(uniqueId)) {
+        return false;
+    }
+
+    if (options.initialStatus) {
+        publishRetained(mqttClient, topics.path('elevator', elevatorId, 'status'), options.initialStatus);
+    }
+
+    const switchConfig = {
+        name: '엘레베이터',
+        unique_id: `${uniqueId}_switch`,
+        command_topic: topics.path('elevator', elevatorId, 'set'),
+        state_topic: topics.path('elevator', elevatorId, 'status'),
+        availability_topic: topics.availability('elevator', elevatorId),
+        payload_available: 'available',
+        payload_not_available: 'unavailable',
+        device: cloneDeviceInfo(),
+    };
+
+    publishDiscovery(
+        mqttClient,
+        topics.discovery('switch', `${uniqueId}_switch`),
+        switchConfig,
+        async () => {
+            discoveredElevators.add(uniqueId);
+            await saveState();
+            publishAvailability(mqttClient, topics.availability('elevator', elevatorId), 'available');
+        },
+        'Failed to publish elevator discovery:'
+    );
+
+    return true;
+}
+
+function clearElevatorDiscovery(discoveredElevators, mqttClient, options = {}) {
+    const { saveState, topics } = buildContext(options);
+    const elevatorConfig = options.elevator || {};
+    const elevatorId = elevatorConfig.deviceId || '01';
+    const uniqueId = `commax_elevator_${elevatorId}`;
+
+    publishRetained(mqttClient, topics.discovery('switch', `${uniqueId}_switch`), '');
+    publishRetained(mqttClient, topics.path('elevator', elevatorId, 'status'), '');
+    publishAvailability(mqttClient, topics.availability('elevator', elevatorId), 'unavailable');
+
+    if (discoveredElevators.delete(uniqueId)) {
+        void saveState();
+    }
+
+    return true;
+}
+
+function analyzeAndDiscoverElevator(bytes, discoveredElevators, mqttClient, options = {}) {
+    const elevatorConfig = options.elevator || {};
+    if (elevatorConfig.mode === 'off') {
+        return false;
+    }
+
+    const frameKind = getElevatorFrameKind(bytes, elevatorConfig);
+    if (!frameKind) {
+        return false;
+    }
+
+    const { topics } = buildContext(options);
+    const elevatorId = getElevatorDeviceIdFromFrame(bytes, elevatorConfig);
+    publishElevatorDiscovery(discoveredElevators, mqttClient, {
+        ...options,
+        elevator: {
+            ...elevatorConfig,
+            deviceId: elevatorId,
+        },
+    });
+
+    const status = getElevatorStatusFromFrameKind(frameKind);
+    if (status) {
+        publishRetained(mqttClient, topics.path('elevator', elevatorId, 'status'), status);
+    }
+
+    return true;
 }
 
 function parseMasterLightPacket(bytes) {
@@ -1417,6 +1539,7 @@ module.exports = {
     analyzeAndDiscoverWallpadTime,
     analyzeParkingAreaAndCarNumber,
     calculateChecksum,
+    clearElevatorDiscovery,
     applyConfiguredMonthlyUsage,
     calculateMonthlyMeteringValues,
     getMonthlyMeteringPeriod,
@@ -1428,4 +1551,5 @@ module.exports = {
     parseTemperaturePacket,
     parseVentilationPacket,
     parseWallpadTimePacket,
+    publishElevatorDiscovery,
 };

@@ -11,6 +11,7 @@ const { createDiagnostics } = require('./diagnostics');
 const { createTopicBuilder } = require('./topics');
 const {
     analyzeAndDiscoverAirQuality,
+    analyzeAndDiscoverElevator,
     analyzeAndDiscoverLifeInfo,
     analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
@@ -21,6 +22,8 @@ const {
     analyzeAndDiscoverVentilation,
     analyzeAndDiscoverWallpadTime,
     analyzeParkingAreaAndCarNumber,
+    clearElevatorDiscovery,
+    publishElevatorDiscovery,
 } = require('./deviceParser');
 const { loadState, saveState } = require('./stateManager');
 
@@ -312,9 +315,44 @@ function logMonthlyMeteringUsageConfig(monthlyUsageConfig, date = new Date()) {
     log(`월간 검침 보정값 입력 확인: 시작일=${systemDate.dateText}, 시스템 기준 월=${systemDate.period}, 보정 월=${monthlyUsageConfig.period}, 입력값=${valuesText}. ${usagePlan}`);
 }
 
-function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket }) {
+function logElevatorConfig(elevatorConfig, topicPrefix) {
+    const invalidEntries = Object.entries(elevatorConfig?.invalid || {})
+        .filter(([, value]) => value)
+        .map(([key, value]) => `${key}=${value}`);
+
+    if (invalidEntries.length > 0) {
+        log(`엘리베이터 RS485 설정값 무시: ${invalidEntries.join(', ')}. 유효한 8바이트 checksum 프레임 또는 허용 모드(off/mqtt/rs485)만 사용합니다.`);
+    }
+
+    if (elevatorConfig?.mode === 'off') {
+        log('엘리베이터 호출 모드: 비활성. Discovery 발행과 MQTT/RS485 호출 처리를 하지 않습니다.');
+        return;
+    }
+
+    if (elevatorConfig?.mode === 'rs485') {
+        log(`엘리베이터 호출 모드: RS485 직접 처리. 호출명령=${elevatorConfig.callCommand.hex || '미설정'}, 호출ON=${elevatorConfig.frames.callOn.hex || '미설정'}, 호출중=${elevatorConfig.frames.calling.hex || '미설정'}, 해제=${elevatorConfig.frames.released.hex || '미설정'}`);
+        return;
+    }
+
+    log(`엘리베이터 호출 모드: MQTT 전달(SOAP 외부 애드온 처리). ${topicPrefix}/elevator/01/set 토픽은 유지하고 RS485 호출 명령은 보내지 않습니다.`);
+}
+
+function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket, elevatorConfig }) {
     return (bytes) => {
         packetMonitor.recordPacket();
+
+        if (analyzeAndDiscoverElevator(bytes, state.discoveredElevators, mqttClient, {
+            saveState: saveCurrentState,
+            topics,
+            elevator: elevatorConfig,
+        })) {
+            commandHandler.handleAckOrState(bytes);
+            const socket = getSocket();
+            if (socket) {
+                commandHandler.dequeueAndWrite(socket);
+            }
+            return;
+        }
 
         switch (bytes[0]) {
             case 0xF9:
@@ -479,6 +517,7 @@ async function main() {
 
     const config = loadConfig();
     logMonthlyMeteringUsageConfig(config.monthlyMeteringUsageOverrides);
+    logElevatorConfig(config.elevator, config.mqtt.topicPrefix);
     const topics = createTopicBuilder(config.mqtt.topicPrefix);
     const state = await loadState();
     const saveCurrentState = () => saveState(state);
@@ -487,12 +526,30 @@ async function main() {
         filePath: config.packetCapture.path,
     });
 
-    const commandHandler = new CommandHandler({ topicPrefix: config.mqtt.topicPrefix });
+    const commandHandler = new CommandHandler({
+        topicPrefix: config.mqtt.topicPrefix,
+        elevator: config.elevator,
+    });
 
     let mqttClient;
     mqttClient = new MqttClient(config.mqtt, (topic, message) => {
         commandHandler.handleMessage(topic, message, mqttClient);
     });
+
+    if (config.elevator.mode === 'off') {
+        clearElevatorDiscovery(state.discoveredElevators, mqttClient, {
+            saveState: saveCurrentState,
+            topics,
+            elevator: config.elevator,
+        });
+    } else if (config.elevator.mode === 'mqtt') {
+        publishElevatorDiscovery(state.discoveredElevators, mqttClient, {
+            saveState: saveCurrentState,
+            topics,
+            elevator: config.elevator,
+            initialStatus: 'OFF',
+        });
+    }
 
     const availabilityController = createAvailabilityController(state, mqttClient, topics);
     const diagnostics = createDiagnostics({
@@ -518,6 +575,7 @@ async function main() {
             packetMonitor,
             packetCapture,
             getSocket: () => primaryClient?.socket,
+            elevatorConfig: config.elevator,
         }),
         writeCommand: (command) => commandHandler.safeWrite(command, primaryClient?.socket),
         onUnknownPacket: (packet) => packetCapture.record(packet),

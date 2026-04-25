@@ -32,6 +32,23 @@ function clearPendingTimers(handler) {
     }
 }
 
+function bytesFromHex(hex) {
+    return hex.split(/\s+/).map((byte) => Number.parseInt(byte, 16));
+}
+
+function createElevatorConfig(mode = 'rs485') {
+    return {
+        mode,
+        deviceId: '01',
+        callCommand: { bytes: bytesFromHex('A0 01 01 00 08 D7 00 81') },
+        frames: {
+            callOn: { bytes: bytesFromHex('22 01 40 07 00 00 00 6A') },
+            calling: { bytes: bytesFromHex('26 01 01 42 00 01 05 70') },
+            released: { bytes: bytesFromHex('26 01 01 00 00 00 00 28') },
+        },
+    };
+}
+
 test('sendCommand keeps duplicate commands as separate retry entries', () => {
     const handler = new CommandHandler({ topicPrefix: 'devcommax' });
     const command = handler.createOutletCommand('01', 0x01, 0x01);
@@ -83,6 +100,63 @@ test('handleMessage queues outlet command without optimistic state publish', () 
     assert.equal(sentCommands.length, 1);
     assert.equal(sentCommands[0].toString('hex'), handler.createOutletCommand('01', 0x01, 0x01).toString('hex'));
     assert.deepEqual(mqttClient.calls, []);
+});
+
+test('handleMessage keeps elevator MQTT mode as SOAP handoff without RS485 command', () => {
+    const handler = new CommandHandler({
+        topicPrefix: 'devcommax',
+        elevator: createElevatorConfig('mqtt'),
+    });
+    const mqttClient = createMqttStub();
+    const sentCommands = [];
+
+    handler.sendCommand = (command) => {
+        sentCommands.push(command);
+    };
+
+    handler.handleMessage('devcommax/elevator/01/set', Buffer.from('ON'), mqttClient);
+
+    assert.equal(sentCommands.length, 0);
+    assert.deepEqual(mqttClient.calls, []);
+});
+
+test('handleMessage ignores elevator commands in off mode', () => {
+    const handler = new CommandHandler({
+        topicPrefix: 'devcommax',
+        elevator: createElevatorConfig('off'),
+    });
+    const mqttClient = createMqttStub();
+    const sentCommands = [];
+
+    handler.sendCommand = (command) => {
+        sentCommands.push(command);
+    };
+
+    handler.handleMessage('devcommax/elevator/01/set', Buffer.from('ON'), mqttClient);
+
+    assert.equal(sentCommands.length, 0);
+    assert.deepEqual(mqttClient.calls, []);
+});
+
+test('handleMessage sends configured elevator command in RS485 mode', () => {
+    const handler = new CommandHandler({
+        topicPrefix: 'devcommax',
+        elevator: createElevatorConfig('rs485'),
+    });
+    const mqttClient = createMqttStub();
+    const sentCommands = [];
+
+    handler.sendCommand = (command, priority, options) => {
+        sentCommands.push({ command, priority, options });
+    };
+
+    handler.handleMessage('devcommax/elevator/01/set', Buffer.from('ON'), mqttClient);
+
+    assert.equal(sentCommands.length, 1);
+    assert.equal(sentCommands[0].command.toString('hex'), 'a001010008d70081');
+    assert.equal(sentCommands[0].priority, 1);
+    assert.equal(sentCommands[0].options.deviceType, 'elevator');
+    assert.equal(sentCommands[0].options.supersedeKey, 'elevator:01:call');
 });
 
 test('handleMessage encodes temperature setpoint as BCD byte', () => {
@@ -351,6 +425,23 @@ test('handleAckOrState keeps pending temperature command when target differs', (
     handler.handleAckOrState([0x82, 0x81, 0x01, 0x23, 0x22, 0x00, 0x00, 0x00]);
 
     assert.equal(handler.commandMetadata.size, 1);
+
+    clearPendingTimers(handler);
+});
+
+test('handleAckOrState matches configured elevator state frame as ACK', () => {
+    const handler = new CommandHandler({
+        topicPrefix: 'devcommax',
+        elevator: createElevatorConfig('rs485'),
+    });
+
+    handler.handleMessage('devcommax/elevator/01/set', Buffer.from('ON'), createMqttStub());
+
+    assert.equal(handler.commandMetadata.size, 1);
+
+    handler.handleAckOrState(bytesFromHex('22 01 40 07 00 00 00 6A'));
+
+    assert.equal(handler.commandMetadata.size, 0);
 
     clearPendingTimers(handler);
 });

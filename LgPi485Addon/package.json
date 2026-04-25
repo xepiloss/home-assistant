@@ -1,0 +1,14 @@
+{
+  "name": "lg-pi485-addon",
+  "version": "0.1.0",
+  "description": "Home Assistant addon for LG PI485 air conditioner control via EW11 TCP socket",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "start:local": "node --env-file=.env src/main.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.4"
+  }
+}

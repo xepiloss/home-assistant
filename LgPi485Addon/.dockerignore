@@ -1,0 +1,9 @@
+node_modules/
+.git/
+.idea/
+.DS_Store
+src/log.txt
+.local-test/
+.env
+.env.*
+!.env.example

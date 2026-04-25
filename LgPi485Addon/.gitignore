@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+.idea/
+src/log.txt
+.local-test/
+.env
+.env.*
+!.env.example

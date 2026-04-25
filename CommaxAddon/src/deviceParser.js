@@ -480,6 +480,32 @@ function toLetter(byte) {
         : '';
 }
 
+function decodeParkingText(bytes) {
+    const paddingBytes = new Set([0x00, 0x80, 0xFF]);
+    let start = 0;
+    let end = bytes.length;
+
+    while (start < end && paddingBytes.has(bytes[start])) {
+        start += 1;
+    }
+
+    while (end > start && paddingBytes.has(bytes[end - 1])) {
+        end -= 1;
+    }
+
+    const chars = bytes.slice(start, end).map(toLetter);
+    if (chars.length === 0 || !chars.every(Boolean)) {
+        return '';
+    }
+
+    const text = chars.join('');
+    if (/^\d+$/.test(text)) {
+        return text.length === 4 ? text : '';
+    }
+
+    return text.length >= 2 ? text : '';
+}
+
 function analyzeParkingAreaAndCarNumber(bytes, parkingState, mqttClient, options = {}) {
     const { saveState, topics } = buildContext(options);
     let parkingArea;
@@ -495,7 +521,7 @@ function analyzeParkingAreaAndCarNumber(bytes, parkingState, mqttClient, options
     }
 
     if (bytes[0] === 0x80 && bytes[1] !== 0x80 && bytes.length >= 10) {
-        carNumber = bytes.slice(6, 10).map(toLetter).join('');
+        carNumber = decodeParkingText(bytes.slice(6, 10));
     }
 
     const needsParkingIconUpdate = parkingState.iconDiscoveryVersion !== PARKING_ICON_DISCOVERY_VERSION;

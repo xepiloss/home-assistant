@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame } = require('../src/knownPackets');
+const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame, isKnownStablePrimaryFrame } = require('../src/knownPackets');
 
 test('isKnownIgnoredPrimaryFrame recognizes documented Commax query frames', () => {
     assert.equal(isKnownIgnoredPrimaryFrame([0x30, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34]), true);
@@ -15,6 +15,23 @@ test('isKnownIgnoredPrimaryFrame keeps malformed or unsupported frames visible',
     assert.equal(isKnownIgnoredPrimaryFrame([0x30, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF]), false);
     assert.equal(isKnownIgnoredPrimaryFrame([0x7F, 0x26, 0x04, 0x25, 0x02, 0x18, 0x35, 0x1D]), false);
     assert.equal(isKnownIgnoredPrimaryFrame([0x57, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x58]), false);
+});
+
+test('isKnownStablePrimaryFrame recognizes only unchanged high-frequency frames', () => {
+    assert.equal(isKnownStablePrimaryFrame([0xF7, 0x20, 0x01, 0x00, 0x00, 0x00, 0x00, 0x18]), true);
+    assert.equal(isKnownStablePrimaryFrame([0x47, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48]), true);
+    assert.equal(isKnownStablePrimaryFrame([0x48, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x49]), true);
+    assert.equal(isKnownStablePrimaryFrame([0x48, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x4A]), true);
+    assert.equal(isKnownStablePrimaryFrame([0x48, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x4B]), true);
+    assert.equal(isKnownStablePrimaryFrame([0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B]), true);
+
+    assert.equal(isKnownStablePrimaryFrame([0x8F, 0x0A, 0x03, 0x05, 0x40, 0x08, 0x46, 0x2F]), false);
+    assert.equal(isKnownStablePrimaryFrame([0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0xFF]), false);
+});
+
+test('isKnownIgnoredPrimaryFrame keeps changed life information frames visible', () => {
+    assert.equal(isKnownIgnoredPrimaryFrame([0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B]), true);
+    assert.equal(isKnownIgnoredPrimaryFrame([0x8F, 0x0A, 0x03, 0x05, 0x40, 0x08, 0x46, 0x2F]), false);
 });
 
 test('isKnownIgnoredMeteringFrame recognizes short metering auxiliary frames', () => {

@@ -2,7 +2,7 @@ const MqttClient = require('./mqttClient');
 const Ew11Client = require('./ew11Client');
 const CommandHandler = require('./commandHandler');
 const { version: ADDON_VERSION } = require('../package.json');
-const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame } = require('./knownPackets');
+const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame, isKnownStablePrimaryFrame } = require('./knownPackets');
 const { createPacketCapture } = require('./packetCapture');
 const { METERING_PACKET_LENGTHS, PRIMARY_PACKET_LENGTHS } = require('./packetFramer');
 const { log, logError } = require('./utils');
@@ -373,12 +373,14 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
             }
             case 0x8F:
                 if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
-                    packetCapture.record({
-                        source: '메인 EW11',
-                        kind: 'life_info_frame',
-                        bytes,
-                        note: 'Life information frame recorded for weather, temperature, and dust mapping.',
-                    });
+                    if (!isKnownStablePrimaryFrame(bytes)) {
+                        packetCapture.record({
+                            source: '메인 EW11',
+                            kind: 'life_info_frame',
+                            bytes,
+                            note: 'Life information frame recorded for weather, temperature, and dust mapping.',
+                        });
+                    }
                 } else {
                     packetCapture.record({
                         source: '메인 EW11',

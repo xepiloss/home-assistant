@@ -45,6 +45,23 @@ const DEFAULT_PACKET_LENGTHS = PRIMARY_PACKET_LENGTHS;
 
 const DEFAULT_MAX_BUFFER_BYTES = 256;
 
+const RECOVERABLE_STATE_HEADERS = new Set([
+    0xB0, 0xB1, // light
+    0xF9, 0xFA, // outlet
+    0x82, 0x84, // thermostat
+    0xF6, 0xF8, // ventilation
+    0xA0, 0xA2, // master light
+    0x26, // elevator
+]);
+
+function calculateChecksum(bytes) {
+    return [...bytes].reduce((sum, byte) => sum + byte, 0) & 0xFF;
+}
+
+function hasValidChecksum(bytes) {
+    return bytes.length >= 8 && calculateChecksum(bytes.subarray(0, 7)) === bytes[7];
+}
+
 function findNextKnownHeader(buffer, packetLengths) {
     for (let index = 1; index < buffer.length; index += 1) {
         if (packetLengths.has(buffer[index])) {
@@ -65,6 +82,37 @@ function resolveFrameLength(buffer, packetLengths) {
     return frameLength;
 }
 
+function findRecoverableStateFrame(buffer, packetLengths) {
+    for (let index = 1; index < buffer.length; index += 1) {
+        if (!RECOVERABLE_STATE_HEADERS.has(buffer[index])) {
+            continue;
+        }
+
+        const frameLength = resolveFrameLength(buffer.subarray(index), packetLengths);
+        if (frameLength !== 8) {
+            continue;
+        }
+
+        if (buffer.length - index < frameLength) {
+            return {
+                index,
+                needsMoreData: true,
+            };
+        }
+
+        const frame = buffer.subarray(index, index + frameLength);
+        if (hasValidChecksum(frame)) {
+            return {
+                index,
+                frame,
+                needsMoreData: false,
+            };
+        }
+    }
+
+    return null;
+}
+
 class PacketFramer {
     constructor({ packetLengths = DEFAULT_PACKET_LENGTHS, maxBufferBytes = DEFAULT_MAX_BUFFER_BYTES } = {}) {
         this.packetLengths = packetLengths;
@@ -81,6 +129,7 @@ class PacketFramer {
 
         const frames = [];
         const dropped = [];
+        const recovered = [];
 
         while (this.buffer.length > 0) {
             const frameLength = resolveFrameLength(this.buffer, this.packetLengths);
@@ -107,7 +156,31 @@ class PacketFramer {
                 break;
             }
 
-            frames.push([...this.buffer.subarray(0, frameLength)]);
+            const frame = this.buffer.subarray(0, frameLength);
+            if (
+                frameLength === 8
+                && !RECOVERABLE_STATE_HEADERS.has(frame[0])
+                && !hasValidChecksum(frame)
+            ) {
+                const recoverable = findRecoverableStateFrame(this.buffer, this.packetLengths);
+                if (recoverable) {
+                    if (recoverable.index > 0) {
+                        dropped.push(this.buffer.subarray(0, recoverable.index));
+                        this.buffer = this.buffer.subarray(recoverable.index);
+                    }
+
+                    if (recoverable.needsMoreData) {
+                        break;
+                    }
+
+                    frames.push([...recoverable.frame]);
+                    recovered.push([...recoverable.frame]);
+                    this.buffer = this.buffer.subarray(recoverable.frame.length);
+                    continue;
+                }
+            }
+
+            frames.push([...frame]);
             this.buffer = this.buffer.subarray(frameLength);
         }
 
@@ -116,7 +189,12 @@ class PacketFramer {
             this.buffer = Buffer.alloc(0);
         }
 
-        return { frames, dropped };
+        const result = { frames, dropped };
+        if (recovered.length > 0) {
+            result.recovered = recovered;
+        }
+
+        return result;
     }
 }
 

@@ -8,6 +8,7 @@ const {
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMetering,
     analyzeAndDiscoverWallpadTime,
+    analyzeParkingAreaAndCarNumber,
     applyConfiguredMonthlyUsage,
     calculateChecksum,
     calculateMonthlyMeteringValues,
@@ -260,6 +261,55 @@ test('analyzeAndDiscoverLight publishes discovery and state topics once', async 
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/light/light_01/config'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/light/01/state' && call.message === 'ON'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/light/01/brightness' && call.message === '5'));
+});
+
+test('analyzeParkingAreaAndCarNumber filters car number fragments while allowing known formats', () => {
+    const topics = createTopicBuilder('devcommax');
+    const parkingState = {
+        parkingDiscovered: true,
+        carNumberDiscovered: true,
+        iconDiscoveryVersion: 2,
+    };
+
+    const invalidMqttClient = createMqttStub();
+    analyzeParkingAreaAndCarNumber(
+        [0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xB6, 0x00],
+        parkingState,
+        invalidMqttClient,
+        { topics }
+    );
+
+    assert.equal(invalidMqttClient.calls.some((call) => call.topic === 'devcommax/parking/car_number'), false);
+
+    const validMqttClient = createMqttStub();
+    analyzeParkingAreaAndCarNumber(
+        [0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0xB1, 0xB2, 0xB3, 0xB4],
+        parkingState,
+        validMqttClient,
+        { topics }
+    );
+
+    assert(validMqttClient.calls.some((call) => call.topic === 'devcommax/parking/car_number' && call.message === '1234'));
+
+    const alphanumericMqttClient = createMqttStub();
+    analyzeParkingAreaAndCarNumber(
+        [0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0xC1, 0xD2, 0xBA, 0xB1],
+        parkingState,
+        alphanumericMqttClient,
+        { topics }
+    );
+
+    assert(alphanumericMqttClient.calls.some((call) => call.topic === 'devcommax/parking/car_number' && call.message === 'AR:1'));
+
+    const paddedShortMqttClient = createMqttStub();
+    analyzeParkingAreaAndCarNumber(
+        [0x80, 0x01, 0x00, 0x00, 0x00, 0x00, 0xC1, 0xB1, 0x80, 0x80],
+        parkingState,
+        paddedShortMqttClient,
+        { topics }
+    );
+
+    assert(paddedShortMqttClient.calls.some((call) => call.topic === 'devcommax/parking/car_number' && call.message === 'A1'));
 });
 
 test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', async () => {

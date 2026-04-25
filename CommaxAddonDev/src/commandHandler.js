@@ -162,15 +162,8 @@ class CommandHandler {
         this.retryConfig = readRetryConfig(env);
         this.logger = logger;
         this.commandMetadata = new Map();
+        this.deferredCommands = new Map();
         this.nextCommandId = 1;
-    }
-
-    publishRetained(mqttClient, topic, message) {
-        mqttClient.publish(topic, String(message), { retain: true }, (err) => {
-            if (err) {
-                logError(`Failed to publish ${topic}:`, err);
-            }
-        });
     }
 
     safeWrite(command, socket) {
@@ -189,12 +182,8 @@ class CommandHandler {
         log(`-> ${formatCommandLog(command)}`);
     }
 
-    sendCommand(command, priority = 1, options = {}) {
-        if (options.supersedeKey) {
-            this.removePendingBySupersedeKey(options.supersedeKey);
-        }
-
-        const commandEntry = {
+    createCommandEntry(command, priority, options = {}) {
+        return {
             id: this.nextCommandId++,
             command,
             priority,
@@ -206,8 +195,39 @@ class CommandHandler {
             sentAt: null,
             timeout: null,
         };
+    }
 
-        this.priorityQueue.enqueue(commandEntry.command, priority);
+    sendCommand(command, priority = 1, options = {}) {
+        const commandEntry = this.createCommandEntry(command, priority, options);
+
+        if (commandEntry.supersedeKey) {
+            const inFlightCommand = this.findInFlightBySupersedeKey(commandEntry.supersedeKey);
+            if (inFlightCommand) {
+                if (inFlightCommand.hexKey === commandEntry.hexKey) {
+                    this.deferredCommands.delete(commandEntry.supersedeKey);
+                    return;
+                }
+
+                this.deferredCommands.set(commandEntry.supersedeKey, {
+                    command,
+                    priority,
+                    options: { ...options },
+                });
+                log(`${formatCommandLog(command)} 명령 보류 (${commandEntry.supersedeKey} ACK 대기 중)`);
+                return;
+            }
+        }
+
+        this.enqueueCommandEntry(commandEntry);
+    }
+
+    enqueueCommandEntry(commandEntry) {
+        if (commandEntry.supersedeKey) {
+            this.deferredCommands.delete(commandEntry.supersedeKey);
+            this.removePendingBySupersedeKey(commandEntry.supersedeKey);
+        }
+
+        this.priorityQueue.enqueue(commandEntry.command, commandEntry.priority);
         this.commandMetadata.set(commandEntry.id, commandEntry);
     }
 
@@ -243,6 +263,7 @@ class CommandHandler {
 
         clearTimeout(commandEntry.timeout);
         this.commandMetadata.delete(commandId);
+        this.enqueueDeferredCommand(commandEntry);
     }
 
     removePendingBySupersedeKey(supersedeKey) {
@@ -250,6 +271,10 @@ class CommandHandler {
 
         for (const [commandId, commandEntry] of this.commandMetadata.entries()) {
             if (commandEntry.supersedeKey !== supersedeKey) {
+                continue;
+            }
+
+            if (commandEntry.sentAt) {
                 continue;
             }
 
@@ -263,6 +288,41 @@ class CommandHandler {
         }
 
         this.priorityQueue.removeWhere(({ value }) => removedHexKeys.has(value.toString('hex')));
+    }
+
+    findInFlightBySupersedeKey(supersedeKey) {
+        for (const commandEntry of this.commandMetadata.values()) {
+            if (commandEntry.supersedeKey === supersedeKey && commandEntry.sentAt) {
+                return commandEntry;
+            }
+        }
+
+        return null;
+    }
+
+    enqueueDeferredCommand(previousEntry) {
+        const { supersedeKey } = previousEntry;
+        if (!supersedeKey) {
+            return;
+        }
+
+        const deferredCommand = this.deferredCommands.get(supersedeKey);
+        if (!deferredCommand) {
+            return;
+        }
+
+        this.deferredCommands.delete(supersedeKey);
+
+        if (deferredCommand.command.toString('hex') === previousEntry.hexKey) {
+            return;
+        }
+
+        const commandEntry = this.createCommandEntry(
+            deferredCommand.command,
+            deferredCommand.priority,
+            deferredCommand.options
+        );
+        this.enqueueCommandEntry(commandEntry);
     }
 
     markCommandSent(command, restartTimer = false) {
@@ -578,7 +638,6 @@ class CommandHandler {
             this.sendCommand(this.createOutletCommand(deviceId, 0x01, stateByte), 1, {
                 supersedeKey: `outlet:${deviceId}:state`,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/outlet/${deviceId}/state`, payload);
             return;
         }
 
@@ -591,7 +650,6 @@ class CommandHandler {
             this.sendCommand(this.createOutletCommand(deviceId, 0x03, 0x00, power), 1, {
                 supersedeKey: `outlet:${deviceId}:standby_power`,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/outlet/${deviceId}/standby_power`, power);
             return;
         }
 
@@ -600,7 +658,6 @@ class CommandHandler {
             this.sendCommand(this.createOutletCommand(deviceId, 0x02, modeByte), 1, {
                 supersedeKey: `outlet:${deviceId}:standby_mode`,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/outlet/${deviceId}/standby_mode`, payload);
         }
     }
 
@@ -612,8 +669,6 @@ class CommandHandler {
             this.sendCommand(this.createLightPacket(deviceId, 0x03, Number(payload)), 1, {
                 supersedeKey: brightnessKey,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/light/${deviceId}/brightness`, payload);
-            this.publishRetained(mqttClient, `${this.topicPrefix}/light/${deviceId}/state`, 'ON');
             return;
         }
 
@@ -625,7 +680,6 @@ class CommandHandler {
         this.sendCommand(this.createLightPacket(deviceId, power, 0), 1, {
             supersedeKey: `light:${deviceId}:state`,
         });
-        this.publishRetained(mqttClient, `${this.topicPrefix}/light/${deviceId}/state`, power ? 'ON' : 'OFF');
     }
 
     handleTemperatureMessage(topicParts, payload, mqttClient) {
@@ -637,7 +691,6 @@ class CommandHandler {
             this.sendCommand(this.createTemperatureCommand(deviceId, 0x04, modeValue), 1, {
                 supersedeKey: `temp:${deviceId}:mode`,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/temp/${deviceId}/mode`, payload);
             return;
         }
 
@@ -650,8 +703,6 @@ class CommandHandler {
             this.sendCommand(this.createTemperatureCommand(deviceId, 0x03, encodeDecimalDigitsToByte(payload)), 1, {
                 supersedeKey: `temp:${deviceId}:target_temp`,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/temp/${deviceId}/mode`, 'heat');
-            this.publishRetained(mqttClient, `${this.topicPrefix}/temp/${deviceId}/target_temp`, temperature);
         }
     }
 
@@ -664,7 +715,6 @@ class CommandHandler {
             this.sendCommand(this.createVentilationCommand(deviceId, 0x01, stateValue), 1, {
                 supersedeKey: `fan:${deviceId}:state`,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/state`, payload);
             return;
         }
 
@@ -673,7 +723,6 @@ class CommandHandler {
             this.sendCommand(this.createVentilationCommand(deviceId, 0x01, modeValue), 1, {
                 supersedeKey: `fan:${deviceId}:mode`,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/mode`, payload);
             return;
         }
 
@@ -691,8 +740,6 @@ class CommandHandler {
             this.sendCommand(this.createVentilationCommand(deviceId, 0x01, 0x00), 1, {
                 supersedeKey: `fan:${deviceId}:state`,
             });
-            this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/state`, 'OFF');
-            this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/speed`, '0');
             return;
         }
 
@@ -700,8 +747,6 @@ class CommandHandler {
         this.sendCommand(this.createVentilationCommand(deviceId, 0x02, speedValue), 1, {
             supersedeKey: `fan:${deviceId}:speed`,
         });
-        this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/speed`, speed);
-        this.publishRetained(mqttClient, `${this.topicPrefix}/fan/${deviceId}/state`, 'ON');
     }
 
     handleMasterLightMessage(payload, mqttClient) {
@@ -709,7 +754,6 @@ class CommandHandler {
         this.sendCommand(this.createMasterLightCommand('01', state), 1, {
             supersedeKey: 'master_light:01:state',
         });
-        this.publishRetained(mqttClient, `${this.topicPrefix}/master_light/state`, payload);
     }
 
     handleMessage(topic, message, mqttClient) {

@@ -69,7 +69,7 @@ test('sendCommand starts retry timer only after the command is written', () => {
     clearPendingTimers(handler);
 });
 
-test('handleMessage publishes optimistic outlet state updates', () => {
+test('handleMessage queues outlet command without optimistic state publish', () => {
     const handler = new CommandHandler({ topicPrefix: 'devcommax' });
     const mqttClient = createMqttStub();
     const sentCommands = [];
@@ -82,11 +82,7 @@ test('handleMessage publishes optimistic outlet state updates', () => {
 
     assert.equal(sentCommands.length, 1);
     assert.equal(sentCommands[0].toString('hex'), handler.createOutletCommand('01', 0x01, 0x01).toString('hex'));
-    assert.deepEqual(mqttClient.calls[0], {
-        topic: 'devcommax/outlet/01/state',
-        message: 'ON',
-        options: { retain: true },
-    });
+    assert.deepEqual(mqttClient.calls, []);
 });
 
 test('handleMessage encodes temperature setpoint as BCD byte', () => {
@@ -102,8 +98,7 @@ test('handleMessage encodes temperature setpoint as BCD byte', () => {
 
     assert.equal(sentCommands.length, 1);
     assert.equal(sentCommands[0].toString('hex'), handler.createTemperatureCommand('01', 0x03, 0x24).toString('hex'));
-    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/temp/01/mode' && call.message === 'heat'));
-    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/temp/01/target_temp' && call.message === '24'));
+    assert.deepEqual(mqttClient.calls, []);
 });
 
 test('shouldLogMqttCommands accepts common truthy values', () => {
@@ -244,6 +239,71 @@ test('rapid outlet state changes keep only the latest queued command', () => {
 
     assert.equal(socket.writes.length, 1);
     assert.equal(socket.writes[0].toString('hex'), handler.createOutletCommand('01', 0x01, 0x01).toString('hex'));
+
+    clearPendingTimers(handler);
+});
+
+test('sent light command holds the latest opposite state until ACK', () => {
+    const handler = new CommandHandler({ topicPrefix: 'devcommax' });
+    const mqttClient = createMqttStub();
+    const socket = {
+        destroyed: false,
+        writable: true,
+        writableNeedDrain: false,
+        writes: [],
+        write(command) {
+            this.writes.push(command);
+        },
+    };
+
+    handler.handleMessage('devcommax/light/01/set', Buffer.from('ON'), mqttClient);
+    handler.dequeueAndWrite(socket);
+    handler.handleMessage('devcommax/light/01/set', Buffer.from('OFF'), mqttClient);
+    handler.dequeueAndWrite(socket);
+
+    assert.equal(socket.writes.length, 1);
+    assert.equal(handler.commandMetadata.size, 1);
+    assert.equal(handler.deferredCommands.size, 1);
+    assert.deepEqual(mqttClient.calls, []);
+
+    handler.handleAckOrState([0xB1, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0xB3]);
+
+    assert.equal(handler.commandMetadata.size, 1);
+    handler.dequeueAndWrite(socket);
+
+    assert.equal(socket.writes.length, 2);
+    assert.equal(socket.writes[0].toString('hex'), handler.createLightPacket('01', 0x01, 0).toString('hex'));
+    assert.equal(socket.writes[1].toString('hex'), handler.createLightPacket('01', 0x00, 0).toString('hex'));
+
+    clearPendingTimers(handler);
+});
+
+test('sent light command drops deferred state when the latest state matches ACK', () => {
+    const handler = new CommandHandler({ topicPrefix: 'devcommax' });
+    const mqttClient = createMqttStub();
+    const socket = {
+        destroyed: false,
+        writable: true,
+        writableNeedDrain: false,
+        writes: [],
+        write(command) {
+            this.writes.push(command);
+        },
+    };
+
+    handler.handleMessage('devcommax/light/01/set', Buffer.from('ON'), mqttClient);
+    handler.dequeueAndWrite(socket);
+    handler.handleMessage('devcommax/light/01/set', Buffer.from('OFF'), mqttClient);
+    handler.handleMessage('devcommax/light/01/set', Buffer.from('ON'), mqttClient);
+
+    assert.equal(socket.writes.length, 1);
+    assert.equal(handler.deferredCommands.size, 0);
+
+    handler.handleAckOrState([0xB1, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0xB3]);
+    handler.dequeueAndWrite(socket);
+
+    assert.equal(handler.commandMetadata.size, 0);
+    assert.equal(socket.writes.length, 1);
 
     clearPendingTimers(handler);
 });

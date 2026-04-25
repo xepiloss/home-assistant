@@ -69,6 +69,64 @@ test('sendCommand starts retry timer only after the command is written', () => {
     clearPendingTimers(handler);
 });
 
+test('onCommandQueued can flush MQTT commands immediately', () => {
+    const socket = {
+        destroyed: false,
+        writable: true,
+        writableNeedDrain: false,
+        writes: [],
+        write(commandToWrite) {
+            this.writes.push(commandToWrite);
+        },
+    };
+    let handler;
+    handler = new CommandHandler({
+        topicPrefix: 'devcommax',
+        onCommandQueued: () => handler.dequeueAndWrite(socket),
+    });
+    const mqttClient = createMqttStub();
+
+    handler.handleMessage('devcommax/light/01/set', Buffer.from('ON'), mqttClient);
+
+    const [entry] = handler.commandMetadata.values();
+    assert.equal(socket.writes.length, 1);
+    assert.equal(socket.writes[0].toString('hex'), handler.createLightPacket('01', 0x01, 0).toString('hex'));
+    assert.equal(typeof entry.sentAt, 'number');
+    assert(entry.timeout);
+
+    clearPendingTimers(handler);
+});
+
+test('onCommandQueued can flush retry commands immediately', () => {
+    const socket = {
+        destroyed: false,
+        writable: true,
+        writableNeedDrain: false,
+        writes: [],
+        write(commandToWrite) {
+            this.writes.push(commandToWrite);
+        },
+    };
+    let handler;
+    handler = new CommandHandler({
+        topicPrefix: 'devcommax',
+        onCommandQueued: () => handler.dequeueAndWrite(socket),
+    });
+    const command = handler.createLightPacket('01', 0x01, 0);
+
+    handler.sendCommand(command);
+    const [entry] = handler.commandMetadata.values();
+    handler.retryCommand(entry.id);
+
+    assert.equal(socket.writes.length, 2);
+    assert.deepEqual(socket.writes.map((writtenCommand) => writtenCommand.toString('hex')), [
+        command.toString('hex'),
+        command.toString('hex'),
+    ]);
+
+    clearPendingTimers(handler);
+});
+
 test('dequeueAndWrite preserves send order for commands with the same priority', () => {
     const handler = new CommandHandler({ topicPrefix: 'devcommax' });
     const first = handler.createLightPacket('01', 0x01, 0);

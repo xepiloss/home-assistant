@@ -154,13 +154,19 @@ function formatResponseTime(commandEntry, now = Date.now()) {
 }
 
 class CommandHandler {
-    constructor({ topicPrefix, env = process.env, logger = log }) {
+    constructor({
+        topicPrefix,
+        env = process.env,
+        logger = log,
+        onCommandQueued = () => undefined,
+    }) {
         this.topicPrefix = topicPrefix;
         this.priorityQueue = new PriorityQueue();
         this.lastMqttCommandAt = 0;
         this.logMqttCommands = shouldLogMqttCommands(env);
         this.retryConfig = readRetryConfig(env);
         this.logger = logger;
+        this.onCommandQueued = onCommandQueued;
         this.commandMetadata = new Map();
         this.nextCommandId = 1;
     }
@@ -201,6 +207,14 @@ class CommandHandler {
         this.priorityQueue.enqueue(commandEntry, commandEntry.priority);
     }
 
+    notifyCommandQueued(commandEntry) {
+        try {
+            this.onCommandQueued(commandEntry);
+        } catch (err) {
+            logError('명령 큐 즉시 배출 요청 실패:', err);
+        }
+    }
+
     sendCommand(command, priority = 1, options = {}) {
         if (options.supersedeKey) {
             this.removePendingBySupersedeKey(options.supersedeKey);
@@ -221,6 +235,7 @@ class CommandHandler {
 
         this.commandMetadata.set(commandEntry.id, commandEntry);
         this.enqueueCommandEntry(commandEntry);
+        this.notifyCommandQueued(commandEntry);
     }
 
     startRetryTimer(commandEntry) {
@@ -245,6 +260,7 @@ class CommandHandler {
         commandEntry.retries += 1;
         log(`${formatCommandLog(commandEntry.command)} 명령 재전송 예약 (${commandEntry.retries}/${this.retryConfig.maxRetries})`);
         this.enqueueCommandEntry(commandEntry);
+        this.notifyCommandQueued(commandEntry);
     }
 
     removeCommand(commandId) {

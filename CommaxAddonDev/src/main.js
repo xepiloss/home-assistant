@@ -485,7 +485,12 @@ async function main() {
         filePath: config.packetCapture.path,
     });
 
-    const commandHandler = new CommandHandler({ topicPrefix: config.mqtt.topicPrefix });
+    let primaryClient;
+    let packetMonitor;
+    const commandHandler = new CommandHandler({
+        topicPrefix: config.mqtt.topicPrefix,
+        onCommandQueued: () => packetMonitor?.flushQueue(),
+    });
 
     let mqttClient;
     mqttClient = new MqttClient(config.mqtt, (topic, message) => {
@@ -500,8 +505,7 @@ async function main() {
     });
     reportAsyncError('진단 discovery 발행', diagnostics.publishDiscovery());
 
-    let primaryClient;
-    const packetMonitor = createPacketIntervalMonitor(commandHandler, () => primaryClient?.socket);
+    packetMonitor = createPacketIntervalMonitor(commandHandler, () => primaryClient?.socket);
 
     primaryClient = new Ew11Client({
         name: '메인 EW11',

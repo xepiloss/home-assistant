@@ -44,6 +44,11 @@ Home Assistant 애드온 설정 화면에서 아래 값을 입력합니다.
 | `ew11_port` | 월패드 제어용 EW11 포트입니다. 보통 `8899`입니다. |
 | `ew11_metering_host` | 검침 전용 EW11 IP 주소입니다. 없으면 비워둡니다. |
 | `ew11_metering_port` | 검침 전용 EW11 포트입니다. 보통 `8899`입니다. |
+| `elevator_mode` | 엘리베이터 호출 기능 사용 방식입니다. 기본값은 `off`입니다. |
+| `elevator_rs485_call_command` | `rs485` 모드에서 보낼 엘리베이터 호출 명령 패킷입니다. |
+| `elevator_rs485_call_on_frame` | `rs485` 모드에서 호출 ON 상태로 볼 수신 패킷입니다. |
+| `elevator_rs485_calling_frame` | `rs485` 모드에서 호출중 상태로 볼 수신 패킷입니다. |
+| `elevator_rs485_released_frame` | `rs485` 모드에서 호출 해제 상태로 볼 수신 패킷입니다. |
 
 예시:
 
@@ -61,12 +66,80 @@ ew11_metering_host: ""
 ew11_metering_port: 8899
 ```
 
+엘리베이터 호출 기능은 처음 설치 시 `off`로 비활성화되어 있습니다.
+
+```yaml
+elevator_mode: "off"
+```
+
 검침 장비가 별도 EW11에 연결되어 있다면:
 
 ```yaml
 ew11_metering_host: "192.168.0.38"
 ew11_metering_port: 8899
 ```
+
+## 엘리베이터 호출 설정
+
+엘리베이터 호출은 단지마다 구현 방식이 다를 수 있어 기본값은 `off`입니다. 사용 환경에 맞게 `mqtt` 또는 `rs485` 중 하나를 선택해 사용합니다.
+
+### `off` 모드
+
+엘리베이터 기능을 사용하지 않습니다.
+
+```yaml
+elevator_mode: "off"
+```
+
+이 모드에서는 엘리베이터 스위치 Discovery를 발행하지 않습니다. 이전에 `mqtt` 또는 `rs485` 모드로 생성된 retained Discovery가 남아 있다면 애드온 시작 시 정리합니다.
+
+### `mqtt` 모드
+
+SOAP 또는 별도 TCP/IP 호출 방식으로 엘리베이터를 호출하는 환경에서 사용합니다.
+
+```yaml
+elevator_mode: "mqtt"
+```
+
+이 모드에서는 애드온이 Home Assistant에 엘리베이터 스위치를 즉시 등록합니다. 사용자가 스위치를 누르면 아래 MQTT 토픽으로 `ON` payload가 발행됩니다.
+
+```text
+<mqtt_topic_prefix>/elevator/01/set
+```
+
+기본 prefix를 사용할 경우 실제 토픽은 다음과 같습니다.
+
+```text
+devcommax/elevator/01/set
+```
+
+이 애드온은 `mqtt` 모드에서 RS485 명령을 보내지 않습니다. 위 토픽을 다른 애드온이나 자동화에서 구독한 뒤, 각 세대 환경에 맞는 SOAP 또는 TCP/IP 호출 API를 직접 실행하면 됩니다.
+
+예를 들어 별도 SOAP 호출 애드온은 `devcommax/elevator/01/set` 토픽의 `ON` payload를 받아 엘리베이터 호출 API를 실행하고, 처리 상태를 아래 토픽으로 다시 발행할 수 있습니다.
+
+```text
+devcommax/elevator/01/status
+```
+
+상태 토픽에는 호출 중이면 `ON`, 호출이 끝났거나 대기 상태이면 `OFF`를 발행하면 Home Assistant 스위치 상태와 맞출 수 있습니다.
+
+### `rs485` 모드
+
+엘리베이터 호출이 월패드 RS485 신호로 처리되는 환경에서 사용합니다.
+
+```yaml
+elevator_mode: "rs485"
+elevator_rs485_call_command: "A0 01 01 00 08 D7 00 81"
+elevator_rs485_call_on_frame: "22 01 40 07 00 00 00 6A"
+elevator_rs485_calling_frame: "26 01 01 42 00 01 05 70"
+elevator_rs485_released_frame: "26 01 01 00 00 00 00 28"
+```
+
+`rs485` 모드에서는 애드온이 설정된 호출 명령 패킷을 메인 EW11로 직접 전송합니다. 호출 ON, 호출중, 해제 상태 패킷은 각 집 월패드에서 실제로 수신되는 값에 맞게 바꿔 넣을 수 있습니다.
+
+입력하는 패킷은 공백이 있거나 없어도 됩니다. 다만 반드시 8바이트이고 마지막 checksum이 맞아야 합니다. 형식이 틀리거나 checksum이 맞지 않는 값은 시작 로그에 무시 사유를 남기고 사용하지 않습니다.
+
+`rs485` 모드는 설정된 EV 상태 패킷이 실제로 수신된 뒤 엘리베이터 스위치 Discovery를 발행합니다. 아직 패킷이 한 번도 확인되지 않았다면 Home Assistant에 엘리베이터 스위치가 나타나지 않을 수 있습니다.
 
 ## 월간 검침 사용량 보정
 

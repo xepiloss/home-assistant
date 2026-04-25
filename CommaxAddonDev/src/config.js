@@ -51,7 +51,7 @@ const DEFAULT_CONFIG = Object.freeze({
         path: '/share/commax_unknown_packets.jsonl',
     },
     elevator: {
-        mode: 'mqtt',
+        mode: 'off',
         deviceId: '01',
         callCommand: 'A0 01 01 00 08 D7 00 81',
         callOnFrame: '22 01 40 07 00 00 00 6A',

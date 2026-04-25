@@ -1427,15 +1427,15 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, options
     const monthlyMeteringDate = options.monthlyMeteringDate || new Date();
     const values = {
         water_meter: decodeBcdNumber([bytes[5], bytes[6]]),
-        water_acc_meter: decodeBcdNumber([bytes[8], bytes[9]]) / 10,
+        water_acc_meter: decodeBcdNumber([bytes[7], bytes[8], bytes[9]]) / 10,
         gas_meter: decodeBcdNumber([bytes[10], bytes[11]]),
-        gas_acc_meter: decodeBcdNumber([bytes[13], bytes[14]]) / 10,
+        gas_acc_meter: decodeBcdNumber([bytes[12], bytes[13], bytes[14]]) / 10,
         electric_meter: decodeBcdNumber([bytes[15], bytes[16]]),
         electric_acc_meter: decodeBcdNumber([bytes[17], bytes[18], bytes[19]]) / 10,
         warm_meter: decodeBcdNumber([bytes[20], bytes[21]]),
-        warm_acc_meter: decodeBcdNumber([bytes[23], bytes[24]]) / 10,
+        warm_acc_meter: decodeBcdNumber([bytes[22], bytes[23], bytes[24]]) / 10,
         heat_meter: decodeBcdNumber([bytes[25], bytes[26]]) / 10,
-        heat_acc_meter: decodeBcdNumber([bytes[28], bytes[29]]) / 100,
+        heat_acc_meter: decodeBcdNumber([bytes[27], bytes[28], bytes[29]]) / 100,
     };
 
     const monthlyResult = calculateMonthlyMeteringValues(values, monthlyMeteringState, monthlyMeteringDate, monthlyUsageConfig);

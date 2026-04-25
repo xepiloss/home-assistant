@@ -492,6 +492,24 @@ test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', as
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_electric_monthly_meter/config').icon, 'mdi:flash');
 });
 
+test('analyzeAndDiscoverMetering decodes three-byte cumulative BCD values', () => {
+    const mqttClient = createMqttStub();
+    const frame = bytesFromHex(
+        'F7 30 0F 81 19 00 02 01 23 45 00 03 02 34 56 04 56 07 21 98 00 04 03 45 67 12 34 04 56 78 00 00'
+    );
+
+    const handled = analyzeAndDiscoverMetering(frame, new Set(), mqttClient, {
+        topics: createTopicBuilder('devcommax'),
+    });
+
+    assert.equal(handled, true);
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/water_acc_meter/state' && call.message === '1234.5'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/gas_acc_meter/state' && call.message === '2345.6'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/electric_acc_meter/state' && call.message === '7219.8'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/warm_acc_meter/state' && call.message === '3456.7'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/heat_acc_meter/state' && call.message === '456.78'));
+});
+
 test('calculateMonthlyMeteringValues resets baseline when the calendar month changes', () => {
     const monthlyMeteringState = {
         period: '2026-03',

@@ -81,7 +81,7 @@ test('normalizeConfig keeps elevator defaults when invalid inputs are provided',
         elevator_rs485_call_command: 'A0 01 01 00 08 D7 00 82',
     });
 
-    assert.equal(config.elevator.mode, 'mqtt');
+    assert.equal(config.elevator.mode, 'off');
     assert.equal(config.elevator.invalid.mode, 'soap');
     assert.equal(config.elevator.callCommand.hex, '');
     assert.equal(config.elevator.invalid.callCommand, 'A0 01 01 00 08 D7 00 82');

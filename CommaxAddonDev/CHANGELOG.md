@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.11-dev - 2026-04-25
+
+### Fixed
+
+- 실시간 수도/온수/가스 사용량의 `m³/h` 단위가 HA에서 유효하게 처리되도록 device class를 `volume_flow_rate`로 변경했습니다.
+- 실시간 검침 센서에 `state_class: measurement`를 추가해 `0`도 정상 측정값으로 표시되도록 정리했습니다.
+
 ## 1.1.10-dev - 2026-04-25
 
 ### Changed

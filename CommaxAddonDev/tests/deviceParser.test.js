@@ -301,10 +301,17 @@ test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', as
     assert(saveCount >= 2);
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_electric_meter/config'));
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_electric_monthly_meter/config'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/water_meter/state' && call.message === '0'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/gas_meter/state' && call.message === '0'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/warm_meter/state' && call.message === '0'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/water_acc_meter/state' && call.message === '60.1'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/electric_meter/state' && call.message === '314'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/electric_acc_meter/state' && call.message === '4431.7'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/electric_monthly_meter/state' && call.message === '131.7'));
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_water_meter/config').device_class, 'volume_flow_rate');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_water_meter/config').state_class, 'measurement');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_gas_meter/config').device_class, 'volume_flow_rate');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_warm_meter/config').device_class, 'volume_flow_rate');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_gas_meter/config').icon, 'mdi:fire');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_heat_meter/config').icon, 'mdi:radiator');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_electric_monthly_meter/config').icon, 'mdi:flash');

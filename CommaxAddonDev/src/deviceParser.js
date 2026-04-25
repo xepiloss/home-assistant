@@ -43,7 +43,8 @@ const METERING_SENSORS = [
         name: '실시간 수도 사용량',
         uniqueId: 'commax_water_meter',
         unit: 'm³/h',
-        deviceClass: 'water',
+        deviceClass: 'volume_flow_rate',
+        stateClass: 'measurement',
         icon: 'mdi:water-pump',
     },
     {
@@ -52,6 +53,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_electric_meter',
         unit: 'W',
         deviceClass: 'power',
+        stateClass: 'measurement',
         icon: 'mdi:flash',
     },
     {
@@ -59,7 +61,8 @@ const METERING_SENSORS = [
         name: '실시간 온수 사용량',
         uniqueId: 'commax_warm_meter',
         unit: 'm³/h',
-        deviceClass: 'water',
+        deviceClass: 'volume_flow_rate',
+        stateClass: 'measurement',
         icon: 'mdi:water-thermometer',
     },
     {
@@ -68,6 +71,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_heat_meter',
         unit: 'kW',
         deviceClass: 'power',
+        stateClass: 'measurement',
         icon: 'mdi:radiator',
     },
     {
@@ -75,7 +79,8 @@ const METERING_SENSORS = [
         name: '실시간 가스 사용량',
         uniqueId: 'commax_gas_meter',
         unit: 'm³/h',
-        deviceClass: 'water',
+        deviceClass: 'volume_flow_rate',
+        stateClass: 'measurement',
         icon: 'mdi:fire',
     },
     {
@@ -1294,6 +1299,7 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, options
                 payload_not_available: 'unavailable',
                 unit_of_measurement: sensor.unit,
                 device_class: sensor.deviceClass,
+                state_class: sensor.stateClass,
                 device: cloneDeviceInfo(),
             }, sensor);
 

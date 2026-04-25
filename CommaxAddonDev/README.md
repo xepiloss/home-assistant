@@ -123,6 +123,12 @@ devcommax/elevator/01/status
 
 상태 토픽에는 호출 중이면 `ON`, 호출이 끝났거나 대기 상태이면 `OFF`를 발행하면 Home Assistant 스위치 상태와 맞출 수 있습니다.
 
+`mqtt` 모드에서는 기존 `CommaxEv` SOAP 애드온이 발행하는 `commax/ev` 토픽을 기준으로 엘리베이터 1/2 현재층 센서도 함께 등록합니다.
+
+```json
+{"ev1_floor":"▲ 14","ev2_floor":"- 23"}
+```
+
 ### `rs485` 모드
 
 엘리베이터 호출이 월패드 RS485 신호로 처리되는 환경에서 사용합니다.

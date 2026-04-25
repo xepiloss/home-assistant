@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.28-dev - 2026-04-25
+
+### Added
+
+- `mqtt` 엘리베이터 모드에서 호출 스위치 Discovery와 함께 `commax/ev` 토픽 기반 엘리베이터 1/2 현재층 센서를 자동 Discovery 하도록 추가했습니다.
+
 ## 1.1.27-dev - 2026-04-25
 
 ### Changed

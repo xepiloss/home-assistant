@@ -102,7 +102,7 @@ test('analyzeAndDiscoverElevator publishes configured call and release states', 
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/elevator/01/status' && call.message === 'OFF'));
 });
 
-test('publishElevatorDiscovery immediately publishes MQTT mode elevator switch', async () => {
+test('publishElevatorDiscovery immediately publishes MQTT mode elevator switch and floor sensors', async () => {
     const mqttClient = createMqttStub();
     const discoveredElevators = new Set();
     let saveCount = 0;
@@ -120,9 +120,21 @@ test('publishElevatorDiscovery immediately publishes MQTT mode elevator switch',
     });
 
     assert.equal(handled, true);
-    assert.equal(saveCount, 1);
+    assert.equal(saveCount, 2);
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/elevator/01/status' && call.message === 'OFF'));
     assert(findDiscoveryPayload(mqttClient, 'homeassistant/switch/commax_elevator_01_switch/config'));
+    assert.equal(
+        findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_elevator_01_floor_1/config').state_topic,
+        'commax/ev'
+    );
+    assert.equal(
+        findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_elevator_01_floor_1/config').value_template,
+        "{{ value_json.ev1_floor | default('-') }}"
+    );
+    assert.equal(
+        findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_elevator_01_floor_2/config').value_template,
+        "{{ value_json.ev2_floor | default('-') }}"
+    );
 });
 
 test('publishElevatorDiscovery skips disabled elevator mode', () => {
@@ -141,9 +153,27 @@ test('publishElevatorDiscovery skips disabled elevator mode', () => {
     assert.deepEqual(mqttClient.calls, []);
 });
 
-test('clearElevatorDiscovery clears retained discovery and saved state', () => {
+test('publishElevatorDiscovery adds floor sensors for already discovered MQTT elevator switches', () => {
     const mqttClient = createMqttStub();
     const discoveredElevators = new Set(['commax_elevator_01']);
+
+    const handled = publishElevatorDiscovery(discoveredElevators, mqttClient, {
+        topics: createTopicBuilder('devcommax'),
+        elevator: {
+            mode: 'mqtt',
+            deviceId: '01',
+        },
+    });
+
+    assert.equal(handled, true);
+    assert.equal(mqttClient.calls.some((call) => call.topic === 'homeassistant/switch/commax_elevator_01_switch/config'), false);
+    assert(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_elevator_01_floor_1/config'));
+    assert(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_elevator_01_floor_2/config'));
+});
+
+test('clearElevatorDiscovery clears retained discovery and saved state', () => {
+    const mqttClient = createMqttStub();
+    const discoveredElevators = new Set(['commax_elevator_01', 'commax_elevator_01_floor_sensors_v1']);
     let saveCount = 0;
 
     const handled = clearElevatorDiscovery(discoveredElevators, mqttClient, {
@@ -160,7 +190,10 @@ test('clearElevatorDiscovery clears retained discovery and saved state', () => {
     assert.equal(handled, true);
     assert.equal(saveCount, 1);
     assert.equal(discoveredElevators.has('commax_elevator_01'), false);
+    assert.equal(discoveredElevators.has('commax_elevator_01_floor_sensors_v1'), false);
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/switch/commax_elevator_01_switch/config' && call.message === ''));
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_elevator_01_floor_1/config' && call.message === ''));
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_elevator_01_floor_2/config' && call.message === ''));
 });
 
 test('parseWallpadTimePacket decodes BCD wallpad date and time', () => {

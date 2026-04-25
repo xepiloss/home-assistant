@@ -134,6 +134,8 @@ const WALLPAD_TIME_DISCOVERY_VERSION = 5;
 const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';
 const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
 const LIFE_INFO_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_temperature';
+const ELEVATOR_FLOOR_DISCOVERY_VERSION = 1;
+const ELEVATOR_MQTT_FLOOR_STATE_TOPIC = 'commax/ev';
 
 const MONTHLY_METERING_SENSORS = [
     {
@@ -813,8 +815,11 @@ function publishElevatorDiscovery(discoveredElevators, mqttClient, options = {})
 
     const elevatorId = elevatorConfig.deviceId || '01';
     const uniqueId = `commax_elevator_${elevatorId}`;
+    const floorDiscoveryId = `${uniqueId}_floor_sensors_v${ELEVATOR_FLOOR_DISCOVERY_VERSION}`;
+    const shouldPublishSwitch = !discoveredElevators.has(uniqueId);
+    const shouldPublishFloorSensors = elevatorConfig.mode === 'mqtt' && !discoveredElevators.has(floorDiscoveryId);
 
-    if (discoveredElevators.has(uniqueId)) {
+    if (!shouldPublishSwitch && !shouldPublishFloorSensors) {
         return false;
     }
 
@@ -822,28 +827,59 @@ function publishElevatorDiscovery(discoveredElevators, mqttClient, options = {})
         publishRetained(mqttClient, topics.path('elevator', elevatorId, 'status'), options.initialStatus);
     }
 
-    const switchConfig = {
-        name: '엘레베이터',
-        unique_id: `${uniqueId}_switch`,
-        command_topic: topics.path('elevator', elevatorId, 'set'),
-        state_topic: topics.path('elevator', elevatorId, 'status'),
-        availability_topic: topics.availability('elevator', elevatorId),
-        payload_available: 'available',
-        payload_not_available: 'unavailable',
-        device: cloneDeviceInfo(),
-    };
+    if (shouldPublishSwitch) {
+        const switchConfig = {
+            name: '엘레베이터',
+            unique_id: `${uniqueId}_switch`,
+            command_topic: topics.path('elevator', elevatorId, 'set'),
+            state_topic: topics.path('elevator', elevatorId, 'status'),
+            availability_topic: topics.availability('elevator', elevatorId),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            device: cloneDeviceInfo(),
+        };
 
-    publishDiscovery(
-        mqttClient,
-        topics.discovery('switch', `${uniqueId}_switch`),
-        switchConfig,
-        async () => {
-            discoveredElevators.add(uniqueId);
-            await saveState();
-            publishAvailability(mqttClient, topics.availability('elevator', elevatorId), 'available');
-        },
-        'Failed to publish elevator discovery:'
-    );
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('switch', `${uniqueId}_switch`),
+            switchConfig,
+            async () => {
+                discoveredElevators.add(uniqueId);
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('elevator', elevatorId), 'available');
+            },
+            'Failed to publish elevator discovery:'
+        );
+    }
+
+    if (shouldPublishFloorSensors) {
+        [
+            { index: 1, key: 'ev1_floor', name: '엘리베이터 1 현재층' },
+            { index: 2, key: 'ev2_floor', name: '엘리베이터 2 현재층' },
+        ].forEach((sensor, sensorIndex, sensors) => {
+            const sensorConfig = {
+                name: sensor.name,
+                unique_id: `${uniqueId}_floor_${sensor.index}`,
+                state_topic: ELEVATOR_MQTT_FLOOR_STATE_TOPIC,
+                value_template: `{{ value_json.${sensor.key} | default('-') }}`,
+                icon: 'mdi:elevator',
+                device: cloneDeviceInfo(),
+            };
+
+            publishDiscovery(
+                mqttClient,
+                topics.discovery('sensor', `${uniqueId}_floor_${sensor.index}`),
+                sensorConfig,
+                sensorIndex === sensors.length - 1
+                    ? async () => {
+                        discoveredElevators.add(floorDiscoveryId);
+                        await saveState();
+                    }
+                    : null,
+                'Failed to publish elevator floor discovery:'
+            );
+        });
+    }
 
     return true;
 }
@@ -853,12 +889,35 @@ function clearElevatorDiscovery(discoveredElevators, mqttClient, options = {}) {
     const elevatorConfig = options.elevator || {};
     const elevatorId = elevatorConfig.deviceId || '01';
     const uniqueId = `commax_elevator_${elevatorId}`;
+    const floorDiscoveryId = `${uniqueId}_floor_sensors_v${ELEVATOR_FLOOR_DISCOVERY_VERSION}`;
 
     publishRetained(mqttClient, topics.discovery('switch', `${uniqueId}_switch`), '');
+    publishRetained(mqttClient, topics.discovery('sensor', `${uniqueId}_floor_1`), '');
+    publishRetained(mqttClient, topics.discovery('sensor', `${uniqueId}_floor_2`), '');
     publishRetained(mqttClient, topics.path('elevator', elevatorId, 'status'), '');
     publishAvailability(mqttClient, topics.availability('elevator', elevatorId), 'unavailable');
 
-    if (discoveredElevators.delete(uniqueId)) {
+    const removedSwitch = discoveredElevators.delete(uniqueId);
+    const removedFloorSensors = discoveredElevators.delete(floorDiscoveryId);
+
+    if (removedSwitch || removedFloorSensors) {
+        void saveState();
+    }
+
+    return true;
+}
+
+function clearElevatorFloorDiscovery(discoveredElevators, mqttClient, options = {}) {
+    const { saveState, topics } = buildContext(options);
+    const elevatorConfig = options.elevator || {};
+    const elevatorId = elevatorConfig.deviceId || '01';
+    const uniqueId = `commax_elevator_${elevatorId}`;
+    const floorDiscoveryId = `${uniqueId}_floor_sensors_v${ELEVATOR_FLOOR_DISCOVERY_VERSION}`;
+
+    publishRetained(mqttClient, topics.discovery('sensor', `${uniqueId}_floor_1`), '');
+    publishRetained(mqttClient, topics.discovery('sensor', `${uniqueId}_floor_2`), '');
+
+    if (discoveredElevators.delete(floorDiscoveryId)) {
         void saveState();
     }
 
@@ -1540,6 +1599,7 @@ module.exports = {
     analyzeParkingAreaAndCarNumber,
     calculateChecksum,
     clearElevatorDiscovery,
+    clearElevatorFloorDiscovery,
     applyConfiguredMonthlyUsage,
     calculateMonthlyMeteringValues,
     getMonthlyMeteringPeriod,

@@ -23,6 +23,7 @@ const {
     analyzeAndDiscoverWallpadTime,
     analyzeParkingAreaAndCarNumber,
     clearElevatorDiscovery,
+    clearElevatorFloorDiscovery,
     publishElevatorDiscovery,
 } = require('./deviceParser');
 const { loadState, saveState } = require('./stateManager');
@@ -548,6 +549,12 @@ async function main() {
             topics,
             elevator: config.elevator,
             initialStatus: 'OFF',
+        });
+    } else if (config.elevator.mode === 'rs485') {
+        clearElevatorFloorDiscovery(state.discoveredElevators, mqttClient, {
+            saveState: saveCurrentState,
+            topics,
+            elevator: config.elevator,
         });
     }
 

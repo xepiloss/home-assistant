@@ -122,6 +122,7 @@ class Ew11Client {
         }
 
         for (const bytes of recovered) {
+            log(`${this.name} 패킷 복원 성공 : ${formatBytes(bytes)}`);
             this.onUnknownPacket({
                 source: this.name,
                 kind: 'recovered_state_frame',

@@ -517,6 +517,9 @@ function analyzeParkingAreaAndCarNumber(bytes, parkingState, mqttClient, options
             carNumber = '-';
         } else {
             parkingArea = bytes.slice(4, 11).map(toLetter).join('');
+            if (bytes.length >= 42) {
+                carNumber = decodeParkingText(bytes.slice(38, 42));
+            }
         }
     }
 

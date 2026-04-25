@@ -24,6 +24,7 @@ const {
     analyzeParkingAreaAndCarNumber,
     clearElevatorDiscovery,
     clearElevatorFloorDiscovery,
+    clearInvalidLightDiscoveries,
     publishElevatorDiscovery,
 } = require('./deviceParser');
 const { loadState, saveState } = require('./stateManager');
@@ -363,8 +364,9 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 break;
             case 0xB0:
             case 0xB1:
-                analyzeAndDiscoverLight(bytes, state.discoveredLights, mqttClient, { saveState: saveCurrentState, topics });
-                commandHandler.handleAckOrState(bytes);
+                if (analyzeAndDiscoverLight(bytes, state.discoveredLights, mqttClient, { saveState: saveCurrentState, topics })) {
+                    commandHandler.handleAckOrState(bytes);
+                }
                 break;
             case 0x2A:
             case 0x80:
@@ -557,6 +559,10 @@ async function main() {
             elevator: config.elevator,
         });
     }
+    clearInvalidLightDiscoveries(state.discoveredLights, mqttClient, {
+        saveState: saveCurrentState,
+        topics,
+    });
 
     const availabilityController = createAvailabilityController(state, mqttClient, topics);
     const diagnostics = createDiagnostics({

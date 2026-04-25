@@ -136,6 +136,7 @@ const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
 const LIFE_INFO_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_temperature';
 const ELEVATOR_FLOOR_DISCOVERY_VERSION = 1;
 const ELEVATOR_MQTT_FLOOR_STATE_TOPIC = 'commax/ev';
+const MAX_LIGHT_DEVICE_ID = 0x20;
 
 const MONTHLY_METERING_SENSORS = [
     {
@@ -445,9 +446,70 @@ function analyzeAndDiscoverOutlet(bytes, discoveredOutlets, mqttClient, options 
     }
 }
 
-function analyzeAndDiscoverLight(bytes, discoveredLights, mqttClient, options = {}) {
+function isValidLightDeviceId(deviceId) {
+    if (typeof deviceId !== 'string' || !/^[0-9A-F]{2}$/i.test(deviceId)) {
+        return false;
+    }
+
+    const numericId = Number.parseInt(deviceId, 16);
+    return numericId >= 0x01 && numericId <= MAX_LIGHT_DEVICE_ID;
+}
+
+function isValidLightStatePacket(bytes) {
     if (bytes.length !== 8 || ![0xB0, 0xB1].includes(bytes[0])) {
-        return;
+        return false;
+    }
+
+    if (calculateChecksum(bytes.slice(0, 7)) !== bytes[7]) {
+        return false;
+    }
+
+    if (![0x00, 0x01].includes(bytes[1])) {
+        return false;
+    }
+
+    if (!isValidLightDeviceId(byteToHex(bytes[2]))) {
+        return false;
+    }
+
+    if (bytes[3] !== 0x00 || bytes[4] !== 0x00 || ![0x00, 0x05].includes(bytes[6])) {
+        return false;
+    }
+
+    if (bytes[6] === 0x05) {
+        return bytes[5] >= 0x00 && bytes[5] <= 0x05;
+    }
+
+    return bytes[5] === 0x00;
+}
+
+function clearInvalidLightDiscoveries(discoveredLights, mqttClient, options = {}) {
+    const { saveState, topics } = buildContext(options);
+    const invalidIds = [...discoveredLights]
+        .filter((uniqueId) => uniqueId.startsWith('commax_light_'))
+        .map((uniqueId) => uniqueId.replace('commax_light_', ''))
+        .filter((deviceId) => !isValidLightDeviceId(deviceId));
+
+    if (invalidIds.length === 0) {
+        return false;
+    }
+
+    invalidIds.forEach((deviceId) => {
+        publishRetained(mqttClient, topics.discovery('light', `light_${deviceId}`), '');
+        publishRetained(mqttClient, topics.path('light', deviceId, 'state'), '');
+        publishRetained(mqttClient, topics.path('light', deviceId, 'brightness'), '');
+        publishAvailability(mqttClient, topics.availability('light', deviceId), 'unavailable');
+        discoveredLights.delete(`commax_light_${deviceId}`);
+        log(`비정상 조명 Discovery 정리 : 조명 ${deviceId}`);
+    });
+
+    void saveState();
+    return true;
+}
+
+function analyzeAndDiscoverLight(bytes, discoveredLights, mqttClient, options = {}) {
+    if (!isValidLightStatePacket(bytes)) {
+        return false;
     }
 
     const { saveState, topics } = buildContext(options);
@@ -494,6 +556,8 @@ function analyzeAndDiscoverLight(bytes, discoveredLights, mqttClient, options = 
     if (canSetBrightness) {
         publishRetained(mqttClient, topics.path('light', deviceId, 'brightness'), brightness);
     }
+
+    return true;
 }
 
 function toLetter(byte) {
@@ -1600,6 +1664,7 @@ module.exports = {
     calculateChecksum,
     clearElevatorDiscovery,
     clearElevatorFloorDiscovery,
+    clearInvalidLightDiscoveries,
     applyConfiguredMonthlyUsage,
     calculateMonthlyMeteringValues,
     getMonthlyMeteringPeriod,

@@ -14,6 +14,7 @@ const {
     calculateChecksum,
     calculateMonthlyMeteringValues,
     clearElevatorDiscovery,
+    clearInvalidLightDiscoveries,
     getMonthlyMeteringPeriod,
     isMeteringPacket,
     parseLifeInfoPacket,
@@ -374,8 +375,8 @@ test('analyzeAndDiscoverLight publishes discovery and state topics once', async 
     const discoveredLights = new Set();
     let saveCount = 0;
 
-    analyzeAndDiscoverLight(
-        [0xB1, 0x01, 0x01, 0x00, 0x00, 0x05, 0x05, 0x00],
+    const handled = analyzeAndDiscoverLight(
+        [0xB1, 0x01, 0x01, 0x00, 0x00, 0x05, 0x05, 0xBD],
         discoveredLights,
         mqttClient,
         {
@@ -386,11 +387,56 @@ test('analyzeAndDiscoverLight publishes discovery and state topics once', async 
         }
     );
 
+    assert.equal(handled, true);
     assert(discoveredLights.has('commax_light_01'));
     assert.equal(saveCount, 1);
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/light/light_01/config'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/light/01/state' && call.message === 'ON'));
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/light/01/brightness' && call.message === '5'));
+});
+
+test('analyzeAndDiscoverLight ignores corrupted and unrealistic light frames', () => {
+    const mqttClient = createMqttStub();
+    const discoveredLights = new Set();
+
+    const corruptedHandled = analyzeAndDiscoverLight(
+        [0xB1, 0x01, 0x04, 0x00, 0x00, 0xD0, 0x96, 0xFF],
+        discoveredLights,
+        mqttClient,
+        { topics: createTopicBuilder('devcommax') }
+    );
+    const unrealisticHandled = analyzeAndDiscoverLight(
+        [0xB1, 0x01, 0x67, 0x00, 0x00, 0x00, 0x00, calculateChecksum([0xB1, 0x01, 0x67, 0x00, 0x00, 0x00, 0x00])],
+        discoveredLights,
+        mqttClient,
+        { topics: createTopicBuilder('devcommax') }
+    );
+
+    assert.equal(corruptedHandled, false);
+    assert.equal(unrealisticHandled, false);
+    assert.equal(discoveredLights.size, 0);
+    assert.deepEqual(mqttClient.calls, []);
+});
+
+test('clearInvalidLightDiscoveries removes retained bogus light discovery', () => {
+    const mqttClient = createMqttStub();
+    const discoveredLights = new Set(['commax_light_01', 'commax_light_67']);
+    let saveCount = 0;
+
+    const handled = clearInvalidLightDiscoveries(discoveredLights, mqttClient, {
+        saveState: async () => {
+            saveCount += 1;
+        },
+        topics: createTopicBuilder('devcommax'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(saveCount, 1);
+    assert.equal(discoveredLights.has('commax_light_01'), true);
+    assert.equal(discoveredLights.has('commax_light_67'), false);
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/light/light_67/config' && call.message === ''));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/light/67/state' && call.message === ''));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/light/67/availability' && call.message === 'unavailable'));
 });
 
 test('analyzeParkingAreaAndCarNumber filters car number fragments while allowing known formats', () => {

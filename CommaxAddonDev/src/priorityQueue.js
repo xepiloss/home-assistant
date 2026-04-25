@@ -1,22 +1,13 @@
 // priorityQueue.js
 
 class PriorityQueue {
-    constructor(comparator = PriorityQueue.defaultComparator) {
+    constructor(comparator = (a, b) => a.priority < b.priority) {
         this.heap = [];
         this.comparator = comparator;
-        this.nextSequence = 0;
-    }
-
-    static defaultComparator(a, b) {
-        if (a.priority !== b.priority) {
-            return a.priority < b.priority;
-        }
-
-        return a.sequence < b.sequence;
     }
 
     enqueue(value, priority) {
-        const node = { value, priority, sequence: this.nextSequence++ };
+        const node = { value, priority };
         this.heap.push(node);
         this.#bubbleUp();
     }

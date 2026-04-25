@@ -173,20 +173,32 @@ class CommandHandler {
         });
     }
 
-    safeWrite(command, socket) {
+    safeWrite(command, socket, commandEntry = null) {
         if (!socket || socket.destroyed || !socket.writable) {
             log('Socket is not connected. Command not sent.');
             return;
         }
 
         if (socket.writableNeedDrain) {
-            this.priorityQueue.enqueue(command, 1);
+            if (commandEntry) {
+                this.enqueueCommandEntry(commandEntry);
+            } else {
+                this.priorityQueue.enqueue(command, 1);
+            }
             return;
         }
 
         socket.write(command);
-        this.markCommandSent(command, true);
+        if (commandEntry) {
+            this.markCommandEntrySent(commandEntry, true);
+        } else {
+            this.markCommandSent(command, true);
+        }
         log(`-> ${formatCommandLog(command)}`);
+    }
+
+    enqueueCommandEntry(commandEntry) {
+        this.priorityQueue.enqueue(commandEntry, commandEntry.priority);
     }
 
     sendCommand(command, priority = 1, options = {}) {
@@ -207,8 +219,8 @@ class CommandHandler {
             timeout: null,
         };
 
-        this.priorityQueue.enqueue(commandEntry.command, priority);
         this.commandMetadata.set(commandEntry.id, commandEntry);
+        this.enqueueCommandEntry(commandEntry);
     }
 
     startRetryTimer(commandEntry) {
@@ -232,7 +244,7 @@ class CommandHandler {
 
         commandEntry.retries += 1;
         log(`${formatCommandLog(commandEntry.command)} 명령 재전송 예약 (${commandEntry.retries}/${this.retryConfig.maxRetries})`);
-        this.priorityQueue.enqueue(commandEntry.command, commandEntry.priority);
+        this.enqueueCommandEntry(commandEntry);
     }
 
     removeCommand(commandId) {
@@ -243,10 +255,11 @@ class CommandHandler {
 
         clearTimeout(commandEntry.timeout);
         this.commandMetadata.delete(commandId);
+        this.priorityQueue.removeWhere(({ value }) => value?.id === commandId);
     }
 
     removePendingBySupersedeKey(supersedeKey) {
-        const removedHexKeys = new Set();
+        const removedCommandIds = new Set();
 
         for (const [commandId, commandEntry] of this.commandMetadata.entries()) {
             if (commandEntry.supersedeKey !== supersedeKey) {
@@ -254,15 +267,26 @@ class CommandHandler {
             }
 
             clearTimeout(commandEntry.timeout);
-            removedHexKeys.add(commandEntry.hexKey);
+            removedCommandIds.add(commandId);
             this.commandMetadata.delete(commandId);
         }
 
-        if (removedHexKeys.size === 0) {
+        if (removedCommandIds.size === 0) {
             return;
         }
 
-        this.priorityQueue.removeWhere(({ value }) => removedHexKeys.has(value.toString('hex')));
+        this.priorityQueue.removeWhere(({ value }) => removedCommandIds.has(value?.id));
+    }
+
+    markCommandEntrySent(commandEntry, restartTimer = false) {
+        if (!this.commandMetadata.has(commandEntry.id)) {
+            return;
+        }
+
+        commandEntry.sentAt = Date.now();
+        if (restartTimer) {
+            this.startRetryTimer(commandEntry);
+        }
     }
 
     markCommandSent(command, restartTimer = false) {
@@ -468,12 +492,21 @@ class CommandHandler {
     }
 
     dequeueAndWrite(socket) {
-        if (this.priorityQueue.isEmpty()) {
+        while (!this.priorityQueue.isEmpty()) {
+            const { value } = this.priorityQueue.dequeue();
+
+            if (Buffer.isBuffer(value)) {
+                this.safeWrite(value, socket);
+                return;
+            }
+
+            if (!this.commandMetadata.has(value.id)) {
+                continue;
+            }
+
+            this.safeWrite(value.command, socket, value);
             return;
         }
-
-        const { value } = this.priorityQueue.dequeue();
-        this.safeWrite(value, socket);
     }
 
     createOutletCommand(deviceId, commandType, value, power = 0) {

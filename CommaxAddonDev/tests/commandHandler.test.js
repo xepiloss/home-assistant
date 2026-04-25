@@ -69,6 +69,91 @@ test('sendCommand starts retry timer only after the command is written', () => {
     clearPendingTimers(handler);
 });
 
+test('dequeueAndWrite preserves send order for commands with the same priority', () => {
+    const handler = new CommandHandler({ topicPrefix: 'devcommax' });
+    const first = handler.createLightPacket('01', 0x01, 0);
+    const second = handler.createOutletCommand('01', 0x01, 0x01);
+    const third = handler.createTemperatureCommand('01', 0x03, 0x24);
+    const socket = {
+        destroyed: false,
+        writable: true,
+        writableNeedDrain: false,
+        writes: [],
+        write(command) {
+            this.writes.push(command);
+        },
+    };
+
+    handler.sendCommand(first);
+    handler.sendCommand(second);
+    handler.sendCommand(third);
+
+    handler.dequeueAndWrite(socket);
+    handler.dequeueAndWrite(socket);
+    handler.dequeueAndWrite(socket);
+
+    assert.deepEqual(socket.writes.map((command) => command.toString('hex')), [
+        first.toString('hex'),
+        second.toString('hex'),
+        third.toString('hex'),
+    ]);
+
+    clearPendingTimers(handler);
+});
+
+test('removePendingBySupersedeKey keeps other entries with identical command bytes', () => {
+    const handler = new CommandHandler({ topicPrefix: 'devcommax' });
+    const command = handler.createVentilationCommand('01', 0x01, 0x04);
+    const socket = {
+        destroyed: false,
+        writable: true,
+        writableNeedDrain: false,
+        writes: [],
+        write(commandToWrite) {
+            this.writes.push(commandToWrite);
+        },
+    };
+
+    handler.sendCommand(command, 1, { supersedeKey: 'fan:01:state' });
+    handler.sendCommand(command, 1, { supersedeKey: 'fan:01:mode' });
+
+    handler.removePendingBySupersedeKey('fan:01:mode');
+    handler.dequeueAndWrite(socket);
+
+    assert.equal(handler.commandMetadata.size, 1);
+    assert.equal([...handler.commandMetadata.values()][0].supersedeKey, 'fan:01:state');
+    assert.equal(socket.writes.length, 1);
+    assert.equal(socket.writes[0].toString('hex'), command.toString('hex'));
+
+    clearPendingTimers(handler);
+});
+
+test('removeCommand drops queued retry entries before they are resent', () => {
+    const handler = new CommandHandler({ topicPrefix: 'devcommax' });
+    const command = handler.createLightPacket('01', 0x01, 0);
+    const socket = {
+        destroyed: false,
+        writable: true,
+        writableNeedDrain: false,
+        writes: [],
+        write(commandToWrite) {
+            this.writes.push(commandToWrite);
+        },
+    };
+
+    handler.sendCommand(command);
+    handler.dequeueAndWrite(socket);
+
+    const [entry] = handler.commandMetadata.values();
+    handler.retryCommand(entry.id);
+    handler.removeCommand(entry.id);
+    handler.dequeueAndWrite(socket);
+
+    assert.equal(socket.writes.length, 1);
+
+    clearPendingTimers(handler);
+});
+
 test('handleMessage publishes optimistic outlet state updates', () => {
     const handler = new CommandHandler({ topicPrefix: 'devcommax' });
     const mqttClient = createMqttStub();

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.27-dev - 2026-04-25
+
+### Changed
+
+- Home Assistant 애드온 스토어에서 Dev 빌드가 실험용으로 표시되도록 `stage: experimental` 메타데이터를 추가했습니다.
+
 ## 1.1.26-dev - 2026-04-25
 
 ### Changed

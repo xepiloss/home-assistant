@@ -135,3 +135,22 @@ test('PacketFramer preserves an incomplete embedded state frame for the next chu
     assert.deepEqual(secondResult.frames, [[...lightFrame]]);
     assert.deepEqual(secondResult.dropped, []);
 });
+
+test('PacketFramer resyncs to a split checksum-valid query frame before a state frame', () => {
+    const framer = new PacketFramer();
+    const brokenPrefixWithQueryHeader = Buffer.from([0x79, 0x40, 0x20, 0x00, 0x00, 0x00, 0x7C, 0x79]);
+    const queryTail = Buffer.from([0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x7C]);
+    const outletState = Buffer.from([0xF9, 0x01, 0x02, 0x10, 0x00, 0x00, 0x12, 0x1E]);
+
+    const firstResult = framer.push(brokenPrefixWithQueryHeader);
+    const secondResult = framer.push(Buffer.concat([queryTail, outletState]));
+
+    assert.deepEqual(firstResult.frames, []);
+    assert.equal(formatBytes(firstResult.dropped[0]), '79 40 20 00 00 00 7C');
+    assert.deepEqual(secondResult.dropped, []);
+    assert.deepEqual(secondResult.recovered, undefined);
+    assert.deepEqual(secondResult.frames, [
+        [0x79, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x7C],
+        [...outletState],
+    ]);
+});

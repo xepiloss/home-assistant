@@ -143,7 +143,9 @@ const PARKING_ICON_DISCOVERY_VERSION = 2;
 const WALLPAD_TIME_DISCOVERY_VERSION = 5;
 const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';
 const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
+const LIFE_INFO_TEMPERATURE_DISCOVERY_VERSION = 2;
 const LIFE_INFO_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_temperature';
+const LIFE_INFO_OUTDOOR_PM10_DISCOVERY_ID = 'commax_life_info_outdoor_pm10';
 const ELEVATOR_FLOOR_DISCOVERY_VERSION = 1;
 const ELEVATOR_MQTT_FLOOR_STATE_TOPIC = 'commax/ev';
 const MAX_LIGHT_DEVICE_ID = 0x20;
@@ -1309,14 +1311,15 @@ function analyzeAndDiscoverLifeInfoTemperature(bytes, lifeInfoState, mqttClient,
     }
 
     const { saveState, topics } = buildContext(options);
+    const needsDiscoveryUpdate = lifeInfoState.lifeInfoTemperatureDiscoveryVersion !== LIFE_INFO_TEMPERATURE_DISCOVERY_VERSION;
 
-    if (!lifeInfoState.lifeInfoTemperatureDiscovered) {
+    if (!lifeInfoState.lifeInfoTemperatureDiscovered || needsDiscoveryUpdate) {
         const sensorConfig = {
-            name: '생활정보 온도',
+            name: '실외 온도',
             unique_id: LIFE_INFO_TEMPERATURE_DISCOVERY_ID,
-            state_topic: topics.path('life_info', 'temperature', 'state'),
-            json_attributes_topic: topics.path('life_info', 'temperature', 'attributes'),
-            availability_topic: topics.availability('life_info', 'temperature'),
+            state_topic: topics.path('life_info', 'outdoor_temperature', 'state'),
+            json_attributes_topic: topics.path('life_info', 'outdoor_temperature', 'attributes'),
+            availability_topic: topics.availability('life_info', 'outdoor_temperature'),
             payload_available: 'available',
             payload_not_available: 'unavailable',
             unit_of_measurement: '°C',
@@ -1331,16 +1334,84 @@ function analyzeAndDiscoverLifeInfoTemperature(bytes, lifeInfoState, mqttClient,
             sensorConfig,
             async () => {
                 lifeInfoState.lifeInfoTemperatureDiscovered = true;
+                lifeInfoState.lifeInfoTemperatureDiscoveryVersion = LIFE_INFO_TEMPERATURE_DISCOVERY_VERSION;
                 await saveState();
-                publishAvailability(mqttClient, topics.availability('life_info', 'temperature'), 'available');
+                publishAvailability(mqttClient, topics.availability('life_info', 'outdoor_temperature'), 'available');
             },
             'Failed to publish life information temperature discovery:'
         );
     }
 
-    publishRetained(mqttClient, topics.path('life_info', 'temperature', 'state'), parsed.temperature);
-    publishRetained(mqttClient, topics.path('life_info', 'temperature', 'attributes'), JSON.stringify({
+    publishRetained(mqttClient, topics.path('life_info', 'outdoor_temperature', 'state'), parsed.temperature);
+    publishRetained(mqttClient, topics.path('life_info', 'outdoor_temperature', 'attributes'), JSON.stringify({
         unknown_code: parsed.unknownCode,
+        device_id: parsed.deviceId,
+        raw: parsed.raw,
+    }));
+
+    return true;
+}
+
+function parseLifeInfoOutdoorPm10Packet(bytes) {
+    if (!bytes || bytes.length !== 8 || bytes[0] !== 0x24 || !hasValidChecksum(bytes)) {
+        return null;
+    }
+
+    if (bytes[1] !== 0x02 || bytes[2] !== 0x01 || bytes[3] !== 0x00 || bytes[5] !== 0x00 || bytes[6] !== 0x00) {
+        return null;
+    }
+
+    const pm10 = bytes[4];
+    if (!Number.isFinite(pm10) || pm10 > 500) {
+        return null;
+    }
+
+    return {
+        deviceId: byteToHex(bytes[2]),
+        pm10,
+        raw: formatBytes(bytes),
+    };
+}
+
+function analyzeAndDiscoverLifeInfoOutdoorPm10(bytes, lifeInfoState, mqttClient, options = {}) {
+    const parsed = parseLifeInfoOutdoorPm10Packet(bytes);
+    if (!parsed) {
+        return false;
+    }
+
+    const { saveState, topics } = buildContext(options);
+
+    if (!lifeInfoState.lifeInfoOutdoorPm10Discovered) {
+        const sensorConfig = {
+            name: '실외 미세먼지',
+            unique_id: LIFE_INFO_OUTDOOR_PM10_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'outdoor_pm10', 'state'),
+            json_attributes_topic: topics.path('life_info', 'outdoor_pm10', 'attributes'),
+            availability_topic: topics.availability('life_info', 'outdoor_pm10'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            unit_of_measurement: 'µg/m³',
+            device_class: 'pm10',
+            state_class: 'measurement',
+            icon: 'mdi:blur',
+            device: cloneDeviceInfo(),
+        };
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_OUTDOOR_PM10_DISCOVERY_ID),
+            sensorConfig,
+            async () => {
+                lifeInfoState.lifeInfoOutdoorPm10Discovered = true;
+                await saveState();
+                publishAvailability(mqttClient, topics.availability('life_info', 'outdoor_pm10'), 'available');
+            },
+            'Failed to publish life information outdoor PM10 discovery:'
+        );
+    }
+
+    publishRetained(mqttClient, topics.path('life_info', 'outdoor_pm10', 'state'), parsed.pm10);
+    publishRetained(mqttClient, topics.path('life_info', 'outdoor_pm10', 'attributes'), JSON.stringify({
         device_id: parsed.deviceId,
         raw: parsed.raw,
     }));
@@ -1673,6 +1744,7 @@ module.exports = {
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverElevator,
     analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoOutdoorPm10,
     analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMasterLight,
@@ -1693,6 +1765,7 @@ module.exports = {
     parseMasterLightPacket,
     parseOutletPacket,
     parseLifeInfoPacket,
+    parseLifeInfoOutdoorPm10Packet,
     parseLifeInfoTemperaturePacket,
     parseTemperaturePacket,
     parseVentilationPacket,

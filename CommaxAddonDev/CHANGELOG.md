@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.31-dev - 2026-04-26
+
+### Fixed
+
+- 기존 설치에서도 검침 센서 표시 정밀도 Discovery가 다시 발행되도록 Discovery 버전 마커를 갱신했습니다.
+
 ## 1.1.30-dev - 2026-04-26
 
 ### Changed

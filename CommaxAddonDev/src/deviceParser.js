@@ -136,9 +136,9 @@ const METERING_SENSORS = [
 ];
 
 const METERING_DISCOVERY_ID = 'commax_metering';
-const METERING_ICON_DISCOVERY_ID = 'commax_metering_realtime_classes_v3';
+const METERING_ICON_DISCOVERY_ID = 'commax_metering_realtime_precision_v4';
 const MONTHLY_METERING_DISCOVERY_ID = 'commax_metering_monthly';
-const MONTHLY_METERING_ICON_DISCOVERY_ID = 'commax_metering_monthly_icons_v2';
+const MONTHLY_METERING_ICON_DISCOVERY_ID = 'commax_metering_monthly_precision_v3';
 const PARKING_ICON_DISCOVERY_VERSION = 2;
 const WALLPAD_TIME_DISCOVERY_VERSION = 5;
 const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';

@@ -549,9 +549,9 @@ test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', as
     assert.equal(isMeteringPacket(frame), true);
     assert.equal(handled, true);
     assert(discoveredMeters.has('commax_metering'));
-    assert(discoveredMeters.has('commax_metering_realtime_classes_v3'));
+    assert(discoveredMeters.has('commax_metering_realtime_precision_v4'));
     assert(discoveredMeters.has('commax_metering_monthly'));
-    assert(discoveredMeters.has('commax_metering_monthly_icons_v2'));
+    assert(discoveredMeters.has('commax_metering_monthly_precision_v3'));
     assert(saveCount >= 2);
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_electric_meter/config'));
     assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/sensor/commax_electric_monthly_meter/config'));

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.30-dev - 2026-04-26
+
+### Changed
+
+- 검침 센서 Discovery에 `suggested_display_precision`을 추가해 Home Assistant 기본 표시 자릿수를 실제 패킷 정밀도에 맞추도록 했습니다.
+
 ## 1.1.29-dev - 2026-04-25
 
 ### Fixed

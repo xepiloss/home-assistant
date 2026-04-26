@@ -45,6 +45,7 @@ const METERING_SENSORS = [
         unit: 'm³/h',
         deviceClass: 'volume_flow_rate',
         stateClass: 'measurement',
+        displayPrecision: 0,
         icon: 'mdi:water-pump',
     },
     {
@@ -54,6 +55,7 @@ const METERING_SENSORS = [
         unit: 'W',
         deviceClass: 'power',
         stateClass: 'measurement',
+        displayPrecision: 0,
         icon: 'mdi:flash',
     },
     {
@@ -63,6 +65,7 @@ const METERING_SENSORS = [
         unit: 'm³/h',
         deviceClass: 'volume_flow_rate',
         stateClass: 'measurement',
+        displayPrecision: 0,
         icon: 'mdi:water-thermometer',
     },
     {
@@ -72,6 +75,7 @@ const METERING_SENSORS = [
         unit: 'kW',
         deviceClass: 'power',
         stateClass: 'measurement',
+        displayPrecision: 1,
         icon: 'mdi:radiator',
     },
     {
@@ -81,6 +85,7 @@ const METERING_SENSORS = [
         unit: 'm³/h',
         deviceClass: 'volume_flow_rate',
         stateClass: 'measurement',
+        displayPrecision: 0,
         icon: 'mdi:fire',
     },
     {
@@ -89,6 +94,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_water_acc_meter',
         unit: 'm³',
         deviceClass: 'water',
+        displayPrecision: 1,
         icon: 'mdi:water',
     },
     {
@@ -97,6 +103,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_electric_acc_meter',
         unit: 'kWh',
         deviceClass: 'energy',
+        displayPrecision: 1,
         icon: 'mdi:transmission-tower',
     },
     {
@@ -105,6 +112,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_warm_acc_meter',
         unit: 'm³',
         deviceClass: 'water',
+        displayPrecision: 1,
         icon: 'mdi:water-thermometer',
     },
     {
@@ -113,6 +121,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_heat_acc_meter',
         unit: 'm³',
         deviceClass: 'water',
+        displayPrecision: 2,
         icon: 'mdi:radiator',
     },
     {
@@ -121,6 +130,7 @@ const METERING_SENSORS = [
         uniqueId: 'commax_gas_acc_meter',
         unit: 'm³',
         deviceClass: 'water',
+        displayPrecision: 1,
         icon: 'mdi:fire',
     },
 ];
@@ -146,6 +156,7 @@ const MONTHLY_METERING_SENSORS = [
         uniqueId: 'commax_water_monthly_meter',
         unit: 'm³',
         deviceClass: 'water',
+        displayPrecision: 1,
         icon: 'mdi:water',
     },
     {
@@ -155,6 +166,7 @@ const MONTHLY_METERING_SENSORS = [
         uniqueId: 'commax_electric_monthly_meter',
         unit: 'kWh',
         deviceClass: 'energy',
+        displayPrecision: 1,
         icon: 'mdi:flash',
     },
     {
@@ -164,6 +176,7 @@ const MONTHLY_METERING_SENSORS = [
         uniqueId: 'commax_warm_monthly_meter',
         unit: 'm³',
         deviceClass: 'water',
+        displayPrecision: 1,
         icon: 'mdi:water-thermometer',
     },
     {
@@ -173,6 +186,7 @@ const MONTHLY_METERING_SENSORS = [
         uniqueId: 'commax_heat_monthly_meter',
         unit: 'm³',
         deviceClass: 'water',
+        displayPrecision: 2,
         icon: 'mdi:radiator',
     },
     {
@@ -182,6 +196,7 @@ const MONTHLY_METERING_SENSORS = [
         uniqueId: 'commax_gas_monthly_meter',
         unit: 'm³',
         deviceClass: 'water',
+        displayPrecision: 1,
         icon: 'mdi:fire',
     },
 ];
@@ -1577,6 +1592,9 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, options
                 state_class: sensor.stateClass,
                 device: cloneDeviceInfo(),
             }, sensor);
+            if (sensor.displayPrecision !== undefined) {
+                sensorConfig.suggested_display_precision = sensor.displayPrecision;
+            }
 
             publishDiscovery(
                 mqttClient,
@@ -1610,6 +1628,9 @@ function analyzeAndDiscoverMetering(bytes, discoveredMeters, mqttClient, options
                 state_class: 'total_increasing',
                 device: cloneDeviceInfo(),
             }, sensor);
+            if (sensor.displayPrecision !== undefined) {
+                sensorConfig.suggested_display_precision = sensor.displayPrecision;
+            }
 
             publishDiscovery(
                 mqttClient,

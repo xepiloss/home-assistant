@@ -564,11 +564,15 @@ test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', as
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/smart_metering/electric_monthly_meter/state' && call.message === '131.7'));
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_water_meter/config').device_class, 'volume_flow_rate');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_water_meter/config').state_class, 'measurement');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_water_meter/config').suggested_display_precision, 0);
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_gas_meter/config').device_class, 'volume_flow_rate');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_warm_meter/config').device_class, 'volume_flow_rate');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_gas_meter/config').icon, 'mdi:fire');
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_heat_meter/config').icon, 'mdi:radiator');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_heat_meter/config').suggested_display_precision, 1);
     assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_electric_monthly_meter/config').icon, 'mdi:flash');
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_electric_monthly_meter/config').suggested_display_precision, 1);
+    assert.equal(findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_heat_monthly_meter/config').suggested_display_precision, 2);
 });
 
 test('analyzeAndDiscoverMetering decodes three-byte cumulative BCD values', () => {

@@ -13,8 +13,9 @@ const {
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverElevator,
     analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoCurrentWeather,
+    analyzeAndDiscoverLifeInfoForecast,
     analyzeAndDiscoverLifeInfoOutdoorPm10,
-    analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMasterLight,
     analyzeAndDiscoverMetering,
@@ -122,8 +123,23 @@ function collectPrimaryAvailabilityTopics(state, topics) {
         availabilityTopics.push(topics.availability('life_info', 'outdoor_temperature'));
     }
 
+    if (state.lifeInfoState?.lifeInfoCurrentWeatherDiscovered) {
+        availabilityTopics.push(
+            topics.availability('life_info', 'outdoor_weather'),
+            topics.availability('life_info', 'outdoor_humidity')
+        );
+    }
+
     if (state.lifeInfoState?.lifeInfoOutdoorPm10Discovered) {
         availabilityTopics.push(topics.availability('life_info', 'outdoor_pm10'));
+    }
+
+    if (state.lifeInfoState?.lifeInfoForecastDiscovered) {
+        availabilityTopics.push(
+            topics.availability('life_info', 'forecast_weather'),
+            topics.availability('life_info', 'forecast_high_temperature'),
+            topics.availability('life_info', 'forecast_low_temperature')
+        );
     }
 
     return availabilityTopics;
@@ -406,26 +422,43 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 }
                 break;
             case 0x24: {
-                const handledTemperature = analyzeAndDiscoverLifeInfoTemperature(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
-                const handledOutdoorPm10 = !handledTemperature
+                const handledCurrentWeather = analyzeAndDiscoverLifeInfoCurrentWeather(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
+                const handledOutdoorPm10 = !handledCurrentWeather
                     && analyzeAndDiscoverLifeInfoOutdoorPm10(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
-                const handled = handledTemperature || handledOutdoorPm10;
+                const handled = handledCurrentWeather || handledOutdoorPm10;
                 packetCapture.record({
                     source: '메인 EW11',
-                    kind: handledTemperature
-                        ? 'life_info_outdoor_temperature_frame'
+                    kind: handledCurrentWeather
+                        ? 'life_info_current_weather_frame'
                         : handledOutdoorPm10
                             ? 'life_info_outdoor_pm10_frame'
                             : 'unhandled_frame',
                     bytes,
-                    note: handledTemperature
-                        ? 'Confirmed life information outdoor temperature frame recorded for unmapped bytes such as unknown_code.'
+                    note: handledCurrentWeather
+                        ? 'Confirmed life information current outdoor weather frame.'
                         : handledOutdoorPm10
                             ? 'Confirmed life information outdoor PM10 frame.'
                         : 'Framed packet with a known length, but no parser handled it.',
                 });
                 break;
             }
+            case 0x25:
+                if (analyzeAndDiscoverLifeInfoForecast(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'life_info_forecast_frame',
+                        bytes,
+                        note: 'Confirmed life information forecast weather frame.',
+                    });
+                } else {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'unhandled_frame',
+                        bytes,
+                        note: 'Framed packet with a known length, but no parser handled it.',
+                    });
+                }
+                break;
             case 0x8F:
                 if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
                     if (!isKnownStablePrimaryFrame(bytes)) {

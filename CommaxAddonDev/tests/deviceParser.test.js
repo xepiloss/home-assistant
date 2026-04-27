@@ -5,6 +5,8 @@ const {
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverElevator,
     analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoCurrentWeather,
+    analyzeAndDiscoverLifeInfoForecast,
     analyzeAndDiscoverLifeInfoOutdoorPm10,
     analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
@@ -18,6 +20,8 @@ const {
     clearInvalidLightDiscoveries,
     getMonthlyMeteringPeriod,
     isMeteringPacket,
+    parseLifeInfoCurrentWeatherPacket,
+    parseLifeInfoForecastPacket,
     parseLifeInfoPacket,
     parseLifeInfoOutdoorPm10Packet,
     parseLifeInfoTemperaturePacket,
@@ -287,33 +291,51 @@ test('parseLifeInfoPacket exposes raw living information bytes without guessing 
     });
 });
 
-test('parseLifeInfoTemperaturePacket decodes confirmed 0x24 temperature frames', () => {
-    assert.deepEqual(parseLifeInfoTemperaturePacket(bytesFromHex('24 01 01 20 80 09 00 CF')), {
+test('parseLifeInfoCurrentWeatherPacket decodes confirmed 0x24 current weather frames', () => {
+    assert.deepEqual(parseLifeInfoCurrentWeatherPacket(bytesFromHex('24 01 01 20 80 09 00 CF')), {
         deviceId: '01',
+        weather: '맑음',
+        weatherCode: 32,
+        weatherCodeHex: '20',
+        humidity: 80,
         temperature: 9,
-        unknownCode: '80',
         raw: '24 01 01 20 80 09 00 CF',
     });
 
-    assert.deepEqual(parseLifeInfoTemperaturePacket(bytesFromHex('24 01 01 20 85 08 00 D3')), {
+    assert.deepEqual(parseLifeInfoCurrentWeatherPacket(bytesFromHex('24 01 01 28 60 0D 00 BB')), {
         deviceId: '01',
-        temperature: 8,
-        unknownCode: '85',
-        raw: '24 01 01 20 85 08 00 D3',
+        weather: '산발성 소나기',
+        weatherCode: 40,
+        weatherCodeHex: '28',
+        humidity: 60,
+        temperature: 13,
+        raw: '24 01 01 28 60 0D 00 BB',
     });
 
-    assert.equal(parseLifeInfoTemperaturePacket(bytesFromHex('24 02 01 00 30 00 00 57')), null);
+    assert.deepEqual(parseLifeInfoCurrentWeatherPacket(bytesFromHex('24 01 01 1C 65 11 00 B8')), {
+        deviceId: '01',
+        weather: '대체로 흐림',
+        weatherCode: 28,
+        weatherCodeHex: '1C',
+        humidity: 65,
+        temperature: 17,
+        raw: '24 01 01 1C 65 11 00 B8',
+    });
+
+    assert.equal(parseLifeInfoCurrentWeatherPacket(bytesFromHex('24 02 01 00 30 00 00 57')), null);
+    assert.deepEqual(parseLifeInfoTemperaturePacket(bytesFromHex('24 01 01 20 80 09 00 CF')), parseLifeInfoCurrentWeatherPacket(bytesFromHex('24 01 01 20 80 09 00 CF')));
 });
 
-test('analyzeAndDiscoverLifeInfoTemperature publishes an outdoor temperature sensor with raw attributes', async () => {
+test('analyzeAndDiscoverLifeInfoCurrentWeather publishes outdoor weather, humidity, and temperature sensors', async () => {
     const mqttClient = createMqttStub();
     const lifeInfoState = {
         lifeInfoTemperatureDiscovered: false,
+        lifeInfoCurrentWeatherDiscovered: false,
     };
     let saveCount = 0;
 
-    const handled = analyzeAndDiscoverLifeInfoTemperature(
-        bytesFromHex('24 01 01 20 85 08 00 D3'),
+    const handled = analyzeAndDiscoverLifeInfoCurrentWeather(
+        bytesFromHex('24 01 01 28 60 0D 00 BB'),
         lifeInfoState,
         mqttClient,
         {
@@ -326,21 +348,125 @@ test('analyzeAndDiscoverLifeInfoTemperature publishes an outdoor temperature sen
 
     await new Promise((resolve) => setImmediate(resolve));
 
-    const discoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_temperature/config');
-    const attributesCall = mqttClient.calls.find((call) => call.topic === 'devcommax/life_info/outdoor_temperature/attributes');
+    const temperatureDiscoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_temperature/config');
+    const weatherDiscoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_outdoor_weather/config');
+    const humidityDiscoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_outdoor_humidity/config');
+    const temperatureAttributesCall = mqttClient.calls.find((call) => call.topic === 'devcommax/life_info/outdoor_temperature/attributes');
+    const weatherAttributesCall = mqttClient.calls.find((call) => call.topic === 'devcommax/life_info/outdoor_weather/attributes');
+    const humidityAttributesCall = mqttClient.calls.find((call) => call.topic === 'devcommax/life_info/outdoor_humidity/attributes');
 
     assert.equal(handled, true);
     assert.equal(lifeInfoState.lifeInfoTemperatureDiscovered, true);
-    assert.equal(lifeInfoState.lifeInfoTemperatureDiscoveryVersion, 2);
-    assert.equal(saveCount, 1);
-    assert.equal(discoveryPayload.name, '실외 온도');
-    assert.equal(discoveryPayload.device_class, 'temperature');
-    assert.equal(discoveryPayload.state_topic, 'devcommax/life_info/outdoor_temperature/state');
-    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/outdoor_temperature/state' && call.message === '8'));
-    assert.deepEqual(JSON.parse(attributesCall.message), {
-        unknown_code: '85',
+    assert.equal(lifeInfoState.lifeInfoTemperatureDiscoveryVersion, 3);
+    assert.equal(lifeInfoState.lifeInfoCurrentWeatherDiscovered, true);
+    assert.equal(lifeInfoState.lifeInfoCurrentWeatherDiscoveryVersion, 1);
+    assert.equal(saveCount, 3);
+    assert.equal(temperatureDiscoveryPayload.name, '실외 온도');
+    assert.equal(temperatureDiscoveryPayload.device_class, 'temperature');
+    assert.equal(temperatureDiscoveryPayload.state_topic, 'devcommax/life_info/outdoor_temperature/state');
+    assert.equal(weatherDiscoveryPayload.name, '실외 날씨');
+    assert.equal(weatherDiscoveryPayload.state_topic, 'devcommax/life_info/outdoor_weather/state');
+    assert.equal(humidityDiscoveryPayload.name, '실외 습도');
+    assert.equal(humidityDiscoveryPayload.device_class, 'humidity');
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/outdoor_temperature/state' && call.message === '13'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/outdoor_weather/state' && call.message === '산발성 소나기'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/outdoor_humidity/state' && call.message === '60'));
+    assert.deepEqual(JSON.parse(temperatureAttributesCall.message), {
+        weather: '산발성 소나기',
+        weather_code: 40,
+        weather_code_hex: '28',
+        humidity: 60,
         device_id: '01',
-        raw: '24 01 01 20 85 08 00 D3',
+        raw: '24 01 01 28 60 0D 00 BB',
+    });
+    assert.deepEqual(JSON.parse(weatherAttributesCall.message), {
+        weather_code: 40,
+        weather_code_hex: '28',
+        humidity: 60,
+        temperature: 13,
+        device_id: '01',
+        raw: '24 01 01 28 60 0D 00 BB',
+    });
+    assert.deepEqual(JSON.parse(humidityAttributesCall.message), {
+        weather: '산발성 소나기',
+        weather_code: 40,
+        weather_code_hex: '28',
+        temperature: 13,
+        device_id: '01',
+        raw: '24 01 01 28 60 0D 00 BB',
+    });
+});
+
+test('analyzeAndDiscoverLifeInfoTemperature keeps the old function name as a current weather alias', () => {
+    const mqttClient = createMqttStub();
+    const lifeInfoState = {};
+
+    assert.equal(analyzeAndDiscoverLifeInfoTemperature(
+        bytesFromHex('24 01 01 28 60 0D 00 BB'),
+        lifeInfoState,
+        mqttClient,
+        { topics: createTopicBuilder('devcommax') }
+    ), true);
+});
+
+test('parseLifeInfoForecastPacket decodes confirmed 0x25 forecast frames', () => {
+    assert.deepEqual(parseLifeInfoForecastPacket(bytesFromHex('25 01 01 00 1D 21 08 6D')), {
+        deviceId: '01',
+        weather: '흐림',
+        weatherCode: 29,
+        weatherCodeHex: '1D',
+        highTemperature: 21,
+        lowTemperature: 8,
+        raw: '25 01 01 00 1D 21 08 6D',
+    });
+
+    assert.equal(parseLifeInfoForecastPacket(bytesFromHex('24 01 01 28 60 0D 00 BB')), null);
+});
+
+test('analyzeAndDiscoverLifeInfoForecast publishes forecast weather and temperature sensors', async () => {
+    const mqttClient = createMqttStub();
+    const lifeInfoState = {
+        lifeInfoForecastDiscovered: false,
+    };
+    let saveCount = 0;
+
+    const handled = analyzeAndDiscoverLifeInfoForecast(
+        bytesFromHex('25 01 01 00 1D 21 08 6D'),
+        lifeInfoState,
+        mqttClient,
+        {
+            saveState: async () => {
+                saveCount += 1;
+            },
+            topics: createTopicBuilder('devcommax'),
+        }
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const weatherDiscoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_forecast_weather/config');
+    const highDiscoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_forecast_high_temperature/config');
+    const lowDiscoveryPayload = findDiscoveryPayload(mqttClient, 'homeassistant/sensor/commax_life_info_forecast_low_temperature/config');
+    const weatherAttributesCall = mqttClient.calls.find((call) => call.topic === 'devcommax/life_info/forecast_weather/attributes');
+
+    assert.equal(handled, true);
+    assert.equal(lifeInfoState.lifeInfoForecastDiscovered, true);
+    assert.equal(lifeInfoState.lifeInfoForecastDiscoveryVersion, 1);
+    assert.equal(saveCount, 3);
+    assert.equal(weatherDiscoveryPayload.name, '예보 날씨');
+    assert.equal(highDiscoveryPayload.name, '예보 최고 온도');
+    assert.equal(lowDiscoveryPayload.name, '예보 최저 온도');
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/forecast_weather/state' && call.message === '흐림'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/forecast_high_temperature/state' && call.message === '21'));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/life_info/forecast_low_temperature/state' && call.message === '8'));
+    assert.deepEqual(JSON.parse(weatherAttributesCall.message), {
+        weather: '흐림',
+        weather_code: 29,
+        weather_code_hex: '1D',
+        high_temperature: 21,
+        low_temperature: 8,
+        device_id: '01',
+        raw: '25 01 01 00 1D 21 08 6D',
     });
 });
 

@@ -143,9 +143,16 @@ const PARKING_ICON_DISCOVERY_VERSION = 2;
 const WALLPAD_TIME_DISCOVERY_VERSION = 5;
 const WALLPAD_TIME_DISCOVERY_ID = 'commax_wallpad_time';
 const LIFE_INFO_RAW_DISCOVERY_ID = 'commax_life_info_raw';
-const LIFE_INFO_TEMPERATURE_DISCOVERY_VERSION = 2;
+const LIFE_INFO_TEMPERATURE_DISCOVERY_VERSION = 3;
 const LIFE_INFO_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_temperature';
+const LIFE_INFO_CURRENT_WEATHER_DISCOVERY_VERSION = 1;
+const LIFE_INFO_OUTDOOR_WEATHER_DISCOVERY_ID = 'commax_life_info_outdoor_weather';
+const LIFE_INFO_OUTDOOR_HUMIDITY_DISCOVERY_ID = 'commax_life_info_outdoor_humidity';
 const LIFE_INFO_OUTDOOR_PM10_DISCOVERY_ID = 'commax_life_info_outdoor_pm10';
+const LIFE_INFO_FORECAST_DISCOVERY_VERSION = 1;
+const LIFE_INFO_FORECAST_WEATHER_DISCOVERY_ID = 'commax_life_info_forecast_weather';
+const LIFE_INFO_FORECAST_HIGH_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_forecast_high_temperature';
+const LIFE_INFO_FORECAST_LOW_TEMPERATURE_DISCOVERY_ID = 'commax_life_info_forecast_low_temperature';
 const ELEVATOR_FLOOR_DISCOVERY_VERSION = 1;
 const ELEVATOR_MQTT_FLOOR_STATE_TOPIC = 'commax/ev';
 const MAX_LIGHT_DEVICE_ID = 0x20;
@@ -266,6 +273,66 @@ function decodeBcdByte(byte) {
 function decodeBcdByteOrRaw(byte) {
     const value = decodeBcdByte(byte);
     return value === null ? byte : value;
+}
+
+const WEATHER_CONDITION_LABELS = Object.freeze({
+    0: '토네이도',
+    1: '열대 폭풍',
+    2: '허리케인',
+    3: '강한 뇌우',
+    4: '뇌우',
+    5: '비/눈',
+    6: '비/진눈깨비',
+    7: '눈/진눈깨비',
+    8: '어는 이슬비',
+    9: '이슬비',
+    10: '어는 비',
+    11: '소나기',
+    12: '소나기',
+    13: '눈발',
+    14: '약한 눈 소나기',
+    15: '날리는 눈',
+    16: '눈',
+    17: '우박',
+    18: '진눈깨비',
+    19: '먼지',
+    20: '안개',
+    21: '연무',
+    22: '연기',
+    23: '돌풍',
+    24: '바람',
+    25: '추움',
+    26: '흐림',
+    27: '대체로 흐림',
+    28: '대체로 흐림',
+    29: '흐림',
+    30: '부분적으로 흐림',
+    31: '맑음',
+    32: '맑음',
+    33: '맑음',
+    34: '맑음',
+    35: '비/우박',
+    36: '더움',
+    37: '국지성 뇌우',
+    38: '산발성 뇌우',
+    39: '산발성 뇌우',
+    40: '산발성 소나기',
+    41: '폭설',
+    42: '산발성 눈 소나기',
+    43: '폭설',
+    44: '부분적으로 흐림',
+    45: '뇌우성 소나기',
+    46: '눈 소나기',
+    47: '국지성 뇌우성 소나기',
+    3200: '정보 없음',
+});
+
+function describeWeatherCode(code) {
+    return WEATHER_CONDITION_LABELS[code] || `알 수 없음(${code})`;
+}
+
+function decodeSignedByte(byte) {
+    return byte > 0x7F ? byte - 0x100 : byte;
 }
 
 function cloneDeviceInfo() {
@@ -1282,38 +1349,52 @@ function analyzeAndDiscoverLifeInfo(bytes, lifeInfoState, mqttClient, options = 
     return true;
 }
 
-function parseLifeInfoTemperaturePacket(bytes) {
+function parseLifeInfoCurrentWeatherPacket(bytes) {
     if (!bytes || bytes.length !== 8 || bytes[0] !== 0x24 || !hasValidChecksum(bytes)) {
         return null;
     }
 
-    if (bytes[1] !== 0x01 || bytes[2] !== 0x01 || bytes[3] !== 0x20 || bytes[6] !== 0x00) {
+    if (bytes[1] !== 0x01 || bytes[2] !== 0x01 || bytes[6] !== 0x00) {
         return null;
     }
 
-    const temperature = decodeBcdByteOrRaw(bytes[5]);
-    if (!Number.isFinite(temperature) || temperature > 60) {
+    const weatherCode = bytes[3];
+    const humidity = decodeBcdByte(bytes[4]);
+    const temperature = decodeSignedByte(bytes[5]);
+    if (!Number.isFinite(humidity) || humidity < 0 || humidity > 100) {
+        return null;
+    }
+
+    if (!Number.isFinite(temperature) || temperature < -50 || temperature > 60) {
         return null;
     }
 
     return {
         deviceId: byteToHex(bytes[2]),
+        weather: describeWeatherCode(weatherCode),
+        weatherCode,
+        weatherCodeHex: byteToHex(weatherCode).toUpperCase(),
+        humidity,
         temperature,
-        unknownCode: byteToHex(bytes[4]).toUpperCase(),
         raw: formatBytes(bytes),
     };
 }
 
-function analyzeAndDiscoverLifeInfoTemperature(bytes, lifeInfoState, mqttClient, options = {}) {
-    const parsed = parseLifeInfoTemperaturePacket(bytes);
+function parseLifeInfoTemperaturePacket(bytes) {
+    return parseLifeInfoCurrentWeatherPacket(bytes);
+}
+
+function analyzeAndDiscoverLifeInfoCurrentWeather(bytes, lifeInfoState, mqttClient, options = {}) {
+    const parsed = parseLifeInfoCurrentWeatherPacket(bytes);
     if (!parsed) {
         return false;
     }
 
     const { saveState, topics } = buildContext(options);
-    const needsDiscoveryUpdate = lifeInfoState.lifeInfoTemperatureDiscoveryVersion !== LIFE_INFO_TEMPERATURE_DISCOVERY_VERSION;
+    const needsTemperatureDiscoveryUpdate = lifeInfoState.lifeInfoTemperatureDiscoveryVersion !== LIFE_INFO_TEMPERATURE_DISCOVERY_VERSION;
+    const needsCurrentWeatherDiscoveryUpdate = lifeInfoState.lifeInfoCurrentWeatherDiscoveryVersion !== LIFE_INFO_CURRENT_WEATHER_DISCOVERY_VERSION;
 
-    if (!lifeInfoState.lifeInfoTemperatureDiscovered || needsDiscoveryUpdate) {
+    if (!lifeInfoState.lifeInfoTemperatureDiscovered || needsTemperatureDiscoveryUpdate) {
         const sensorConfig = {
             name: '실외 온도',
             unique_id: LIFE_INFO_TEMPERATURE_DISCOVERY_ID,
@@ -1342,12 +1423,234 @@ function analyzeAndDiscoverLifeInfoTemperature(bytes, lifeInfoState, mqttClient,
         );
     }
 
+    if (!lifeInfoState.lifeInfoCurrentWeatherDiscovered || needsCurrentWeatherDiscoveryUpdate) {
+        const weatherConfig = {
+            name: '실외 날씨',
+            unique_id: LIFE_INFO_OUTDOOR_WEATHER_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'outdoor_weather', 'state'),
+            json_attributes_topic: topics.path('life_info', 'outdoor_weather', 'attributes'),
+            availability_topic: topics.availability('life_info', 'outdoor_weather'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            icon: 'mdi:weather-partly-cloudy',
+            device: cloneDeviceInfo(),
+        };
+
+        const humidityConfig = {
+            name: '실외 습도',
+            unique_id: LIFE_INFO_OUTDOOR_HUMIDITY_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'outdoor_humidity', 'state'),
+            json_attributes_topic: topics.path('life_info', 'outdoor_humidity', 'attributes'),
+            availability_topic: topics.availability('life_info', 'outdoor_humidity'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            unit_of_measurement: '%',
+            device_class: 'humidity',
+            state_class: 'measurement',
+            device: cloneDeviceInfo(),
+        };
+
+        const onDiscoverySuccess = async () => {
+            lifeInfoState.lifeInfoCurrentWeatherDiscovered = true;
+            lifeInfoState.lifeInfoCurrentWeatherDiscoveryVersion = LIFE_INFO_CURRENT_WEATHER_DISCOVERY_VERSION;
+            await saveState();
+        };
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_OUTDOOR_WEATHER_DISCOVERY_ID),
+            weatherConfig,
+            async () => {
+                await onDiscoverySuccess();
+                publishAvailability(mqttClient, topics.availability('life_info', 'outdoor_weather'), 'available');
+            },
+            'Failed to publish life information outdoor weather discovery:'
+        );
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_OUTDOOR_HUMIDITY_DISCOVERY_ID),
+            humidityConfig,
+            async () => {
+                await onDiscoverySuccess();
+                publishAvailability(mqttClient, topics.availability('life_info', 'outdoor_humidity'), 'available');
+            },
+            'Failed to publish life information outdoor humidity discovery:'
+        );
+    }
+
     publishRetained(mqttClient, topics.path('life_info', 'outdoor_temperature', 'state'), parsed.temperature);
     publishRetained(mqttClient, topics.path('life_info', 'outdoor_temperature', 'attributes'), JSON.stringify({
-        unknown_code: parsed.unknownCode,
+        weather: parsed.weather,
+        weather_code: parsed.weatherCode,
+        weather_code_hex: parsed.weatherCodeHex,
+        humidity: parsed.humidity,
         device_id: parsed.deviceId,
         raw: parsed.raw,
     }));
+    publishRetained(mqttClient, topics.path('life_info', 'outdoor_weather', 'state'), parsed.weather);
+    publishRetained(mqttClient, topics.path('life_info', 'outdoor_weather', 'attributes'), JSON.stringify({
+        weather_code: parsed.weatherCode,
+        weather_code_hex: parsed.weatherCodeHex,
+        humidity: parsed.humidity,
+        temperature: parsed.temperature,
+        device_id: parsed.deviceId,
+        raw: parsed.raw,
+    }));
+    publishRetained(mqttClient, topics.path('life_info', 'outdoor_humidity', 'state'), parsed.humidity);
+    publishRetained(mqttClient, topics.path('life_info', 'outdoor_humidity', 'attributes'), JSON.stringify({
+        weather: parsed.weather,
+        weather_code: parsed.weatherCode,
+        weather_code_hex: parsed.weatherCodeHex,
+        temperature: parsed.temperature,
+        device_id: parsed.deviceId,
+        raw: parsed.raw,
+    }));
+
+    return true;
+}
+
+function analyzeAndDiscoverLifeInfoTemperature(bytes, lifeInfoState, mqttClient, options = {}) {
+    return analyzeAndDiscoverLifeInfoCurrentWeather(bytes, lifeInfoState, mqttClient, options);
+}
+
+function parseLifeInfoForecastPacket(bytes) {
+    if (!bytes || bytes.length !== 8 || bytes[0] !== 0x25 || !hasValidChecksum(bytes)) {
+        return null;
+    }
+
+    if (bytes[1] !== 0x01 || bytes[2] !== 0x01 || bytes[3] !== 0x00) {
+        return null;
+    }
+
+    const weatherCode = bytes[4];
+    const highTemperature = decodeBcdByteOrRaw(bytes[5]);
+    const lowTemperature = decodeBcdByteOrRaw(bytes[6]);
+    if (!Number.isFinite(highTemperature) || !Number.isFinite(lowTemperature)) {
+        return null;
+    }
+
+    if (highTemperature < -50 || highTemperature > 70 || lowTemperature < -50 || lowTemperature > 70) {
+        return null;
+    }
+
+    return {
+        deviceId: byteToHex(bytes[2]),
+        weather: describeWeatherCode(weatherCode),
+        weatherCode,
+        weatherCodeHex: byteToHex(weatherCode).toUpperCase(),
+        highTemperature,
+        lowTemperature,
+        raw: formatBytes(bytes),
+    };
+}
+
+function analyzeAndDiscoverLifeInfoForecast(bytes, lifeInfoState, mqttClient, options = {}) {
+    const parsed = parseLifeInfoForecastPacket(bytes);
+    if (!parsed) {
+        return false;
+    }
+
+    const { saveState, topics } = buildContext(options);
+    const needsDiscoveryUpdate = lifeInfoState.lifeInfoForecastDiscoveryVersion !== LIFE_INFO_FORECAST_DISCOVERY_VERSION;
+
+    if (!lifeInfoState.lifeInfoForecastDiscovered || needsDiscoveryUpdate) {
+        const weatherConfig = {
+            name: '예보 날씨',
+            unique_id: LIFE_INFO_FORECAST_WEATHER_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'forecast_weather', 'state'),
+            json_attributes_topic: topics.path('life_info', 'forecast_weather', 'attributes'),
+            availability_topic: topics.availability('life_info', 'forecast_weather'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            icon: 'mdi:weather-partly-cloudy',
+            device: cloneDeviceInfo(),
+        };
+
+        const highTemperatureConfig = {
+            name: '예보 최고 온도',
+            unique_id: LIFE_INFO_FORECAST_HIGH_TEMPERATURE_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'forecast_high_temperature', 'state'),
+            json_attributes_topic: topics.path('life_info', 'forecast_high_temperature', 'attributes'),
+            availability_topic: topics.availability('life_info', 'forecast_high_temperature'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            unit_of_measurement: '°C',
+            device_class: 'temperature',
+            state_class: 'measurement',
+            device: cloneDeviceInfo(),
+        };
+
+        const lowTemperatureConfig = {
+            name: '예보 최저 온도',
+            unique_id: LIFE_INFO_FORECAST_LOW_TEMPERATURE_DISCOVERY_ID,
+            state_topic: topics.path('life_info', 'forecast_low_temperature', 'state'),
+            json_attributes_topic: topics.path('life_info', 'forecast_low_temperature', 'attributes'),
+            availability_topic: topics.availability('life_info', 'forecast_low_temperature'),
+            payload_available: 'available',
+            payload_not_available: 'unavailable',
+            unit_of_measurement: '°C',
+            device_class: 'temperature',
+            state_class: 'measurement',
+            device: cloneDeviceInfo(),
+        };
+
+        const onDiscoverySuccess = async () => {
+            lifeInfoState.lifeInfoForecastDiscovered = true;
+            lifeInfoState.lifeInfoForecastDiscoveryVersion = LIFE_INFO_FORECAST_DISCOVERY_VERSION;
+            await saveState();
+        };
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_FORECAST_WEATHER_DISCOVERY_ID),
+            weatherConfig,
+            async () => {
+                await onDiscoverySuccess();
+                publishAvailability(mqttClient, topics.availability('life_info', 'forecast_weather'), 'available');
+            },
+            'Failed to publish life information forecast weather discovery:'
+        );
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_FORECAST_HIGH_TEMPERATURE_DISCOVERY_ID),
+            highTemperatureConfig,
+            async () => {
+                await onDiscoverySuccess();
+                publishAvailability(mqttClient, topics.availability('life_info', 'forecast_high_temperature'), 'available');
+            },
+            'Failed to publish life information forecast high temperature discovery:'
+        );
+
+        publishDiscovery(
+            mqttClient,
+            topics.discovery('sensor', LIFE_INFO_FORECAST_LOW_TEMPERATURE_DISCOVERY_ID),
+            lowTemperatureConfig,
+            async () => {
+                await onDiscoverySuccess();
+                publishAvailability(mqttClient, topics.availability('life_info', 'forecast_low_temperature'), 'available');
+            },
+            'Failed to publish life information forecast low temperature discovery:'
+        );
+    }
+
+    const attributes = {
+        weather: parsed.weather,
+        weather_code: parsed.weatherCode,
+        weather_code_hex: parsed.weatherCodeHex,
+        high_temperature: parsed.highTemperature,
+        low_temperature: parsed.lowTemperature,
+        device_id: parsed.deviceId,
+        raw: parsed.raw,
+    };
+
+    publishRetained(mqttClient, topics.path('life_info', 'forecast_weather', 'state'), parsed.weather);
+    publishRetained(mqttClient, topics.path('life_info', 'forecast_weather', 'attributes'), JSON.stringify(attributes));
+    publishRetained(mqttClient, topics.path('life_info', 'forecast_high_temperature', 'state'), parsed.highTemperature);
+    publishRetained(mqttClient, topics.path('life_info', 'forecast_high_temperature', 'attributes'), JSON.stringify(attributes));
+    publishRetained(mqttClient, topics.path('life_info', 'forecast_low_temperature', 'state'), parsed.lowTemperature);
+    publishRetained(mqttClient, topics.path('life_info', 'forecast_low_temperature', 'attributes'), JSON.stringify(attributes));
 
     return true;
 }
@@ -1744,6 +2047,8 @@ module.exports = {
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverElevator,
     analyzeAndDiscoverLifeInfo,
+    analyzeAndDiscoverLifeInfoCurrentWeather,
+    analyzeAndDiscoverLifeInfoForecast,
     analyzeAndDiscoverLifeInfoOutdoorPm10,
     analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
@@ -1763,6 +2068,8 @@ module.exports = {
     getMonthlyMeteringPeriod,
     isMeteringPacket,
     parseMasterLightPacket,
+    parseLifeInfoCurrentWeatherPacket,
+    parseLifeInfoForecastPacket,
     parseOutletPacket,
     parseLifeInfoPacket,
     parseLifeInfoOutdoorPm10Packet,

@@ -11,6 +11,7 @@ const {
     analyzeAndDiscoverLifeInfoTemperature,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMetering,
+    analyzeAndDiscoverTemperature,
     analyzeAndDiscoverWallpadTime,
     analyzeParkingAreaAndCarNumber,
     applyConfiguredMonthlyUsage,
@@ -18,6 +19,7 @@ const {
     calculateMonthlyMeteringValues,
     clearElevatorDiscovery,
     clearInvalidLightDiscoveries,
+    clearInvalidTemperatureDiscoveries,
     getMonthlyMeteringPeriod,
     isMeteringPacket,
     parseLifeInfoCurrentWeatherPacket,
@@ -67,6 +69,53 @@ test('parseTemperaturePacket decodes BCD temperature bytes', () => {
         currentTemp: '24',
         targetTemp: '26',
     });
+});
+
+test('parseTemperaturePacket rejects heating device ids above the configured count', () => {
+    const bytes = [0x82, 0x81, 0x05, 0x24, 0x26, 0x00, 0x00];
+    bytes.push(calculateChecksum(bytes));
+
+    assert.equal(parseTemperaturePacket(bytes, { maxDevices: 4 }), null);
+    assert.deepEqual(parseTemperaturePacket(bytes, { maxDevices: 8 }), {
+        deviceId: '05',
+        state: 'idle',
+        currentTemp: '24',
+        targetTemp: '26',
+    });
+});
+
+test('analyzeAndDiscoverTemperature ignores extra heating frames before ACK handling', () => {
+    const mqttClient = createMqttStub();
+    const discoveredTemps = new Set();
+    const bytes = [0x82, 0x81, 0x05, 0x24, 0x26, 0x00, 0x00];
+    bytes.push(calculateChecksum(bytes));
+
+    assert.equal(analyzeAndDiscoverTemperature(bytes, discoveredTemps, mqttClient, {
+        topics: createTopicBuilder('devcommax'),
+        maxDevices: 4,
+    }), false);
+    assert.equal(mqttClient.calls.length, 0);
+    assert.equal(discoveredTemps.size, 0);
+});
+
+test('clearInvalidTemperatureDiscoveries removes heating entities above configured count', () => {
+    const mqttClient = createMqttStub();
+    const discoveredTemps = new Set(['commax_temp_04', 'commax_temp_05']);
+    let saveCount = 0;
+
+    assert.equal(clearInvalidTemperatureDiscoveries(discoveredTemps, mqttClient, {
+        saveState: () => {
+            saveCount += 1;
+        },
+        topics: createTopicBuilder('devcommax'),
+        maxDevices: 4,
+    }), true);
+
+    assert(discoveredTemps.has('commax_temp_04'));
+    assert(!discoveredTemps.has('commax_temp_05'));
+    assert.equal(saveCount, 1);
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_05/config' && call.message === ''));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/temp/05/availability' && call.message === 'unavailable'));
 });
 
 test('parseMasterLightPacket ignores elevator packets sharing the same header', () => {

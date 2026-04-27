@@ -46,6 +46,7 @@ Home Assistant 애드온 설정 화면에서 아래 값을 입력합니다.
 | `ew11_port` | 월패드 제어용 EW11 포트입니다. 보통 `8899`입니다. |
 | `ew11_metering_host` | 검침 전용 EW11 IP 주소입니다. 없으면 비워둡니다. |
 | `ew11_metering_port` | 검침 전용 EW11 포트입니다. 보통 `8899`입니다. |
+| `heating_device_count` | 실제 사용하는 난방 장치 수입니다. 이 번호보다 큰 난방 상태 프레임은 Discovery와 ACK 처리에서 무시하고, 기존 초과 Discovery도 정리합니다. 기본값은 `4`입니다. |
 | `elevator_mode` | 엘리베이터 호출 기능 사용 방식입니다. 기본값은 `off`입니다. |
 | `elevator_rs485_call_command` | `rs485` 모드에서 보낼 엘리베이터 호출 명령 패킷입니다. |
 | `elevator_rs485_call_on_frame` | `rs485` 모드에서 호출 ON 상태로 볼 수신 패킷입니다. |
@@ -66,6 +67,8 @@ ew11_port: 8899
 
 ew11_metering_host: ""
 ew11_metering_port: 8899
+
+heating_device_count: 4
 ```
 
 엘리베이터 호출 기능은 처음 설치 시 `off`로 비활성화되어 있습니다.

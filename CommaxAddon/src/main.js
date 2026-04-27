@@ -27,6 +27,7 @@ const {
     clearElevatorDiscovery,
     clearElevatorFloorDiscovery,
     clearInvalidLightDiscoveries,
+    clearInvalidTemperatureDiscoveries,
     publishElevatorDiscovery,
 } = require('./deviceParser');
 const { loadState, saveState } = require('./stateManager');
@@ -360,7 +361,16 @@ function logElevatorConfig(elevatorConfig, topicPrefix) {
     log(`엘리베이터 호출 모드: MQTT 전달(SOAP 외부 애드온 처리). ${topicPrefix}/elevator/01/set 토픽은 유지하고 RS485 호출 명령은 보내지 않습니다.`);
 }
 
-function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket, elevatorConfig }) {
+function logHeatingConfig(heatingConfig) {
+    const deviceCount = heatingConfig?.deviceCount;
+    const nextIgnoredId = Number.isFinite(deviceCount)
+        ? (deviceCount + 1).toString(16).padStart(2, '0').toUpperCase()
+        : '';
+
+    log(`난방 장치 수 설정: ${deviceCount}개. 난방 ${nextIgnoredId}번 이상 상태 프레임은 Discovery/ACK 처리에서 무시합니다.`);
+}
+
+function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket, elevatorConfig, heatingConfig }) {
     return (bytes) => {
         packetMonitor.recordPacket();
 
@@ -380,8 +390,9 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
         switch (bytes[0]) {
             case 0xF9:
             case 0xFA:
-                analyzeAndDiscoverOutlet(bytes, state.discoveredOutlets, mqttClient, { saveState: saveCurrentState, topics });
-                commandHandler.handleAckOrState(bytes);
+                if (analyzeAndDiscoverOutlet(bytes, state.discoveredOutlets, mqttClient, { saveState: saveCurrentState, topics })) {
+                    commandHandler.handleAckOrState(bytes);
+                }
                 break;
             case 0xB0:
             case 0xB1:
@@ -395,18 +406,25 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 break;
             case 0x82:
             case 0x84:
-                analyzeAndDiscoverTemperature(bytes, state.discoveredTemps, mqttClient, { saveState: saveCurrentState, topics });
-                commandHandler.handleAckOrState(bytes);
+                if (analyzeAndDiscoverTemperature(bytes, state.discoveredTemps, mqttClient, {
+                    saveState: saveCurrentState,
+                    topics,
+                    maxDevices: heatingConfig?.deviceCount,
+                })) {
+                    commandHandler.handleAckOrState(bytes);
+                }
                 break;
             case 0xF6:
             case 0xF8:
-                analyzeAndDiscoverVentilation(bytes, state.discoveredFans, mqttClient, { saveState: saveCurrentState, topics });
-                commandHandler.handleAckOrState(bytes);
+                if (analyzeAndDiscoverVentilation(bytes, state.discoveredFans, mqttClient, { saveState: saveCurrentState, topics })) {
+                    commandHandler.handleAckOrState(bytes);
+                }
                 break;
             case 0xA0:
             case 0xA2:
-                analyzeAndDiscoverMasterLight(bytes, state.discoveredMasterLights, mqttClient, { saveState: saveCurrentState, topics });
-                commandHandler.handleAckOrState(bytes);
+                if (analyzeAndDiscoverMasterLight(bytes, state.discoveredMasterLights, mqttClient, { saveState: saveCurrentState, topics })) {
+                    commandHandler.handleAckOrState(bytes);
+                }
                 break;
             case 0xC8:
                 analyzeAndDiscoverAirQuality(bytes, state.discoveredSensors, mqttClient, { saveState: saveCurrentState, topics });
@@ -568,6 +586,7 @@ async function main() {
     const config = loadConfig();
     logMonthlyMeteringUsageConfig(config.monthlyMeteringUsageOverrides);
     logElevatorConfig(config.elevator, config.mqtt.topicPrefix);
+    logHeatingConfig(config.heating);
     const topics = createTopicBuilder(config.mqtt.topicPrefix);
     const state = await loadState();
     const saveCurrentState = () => saveState(state);
@@ -610,6 +629,11 @@ async function main() {
         saveState: saveCurrentState,
         topics,
     });
+    clearInvalidTemperatureDiscoveries(state.discoveredTemps, mqttClient, {
+        saveState: saveCurrentState,
+        topics,
+        maxDevices: config.heating.deviceCount,
+    });
 
     const availabilityController = createAvailabilityController(state, mqttClient, topics);
     const diagnostics = createDiagnostics({
@@ -636,6 +660,7 @@ async function main() {
             packetCapture,
             getSocket: () => primaryClient?.socket,
             elevatorConfig: config.elevator,
+            heatingConfig: config.heating,
         }),
         writeCommand: (command) => commandHandler.safeWrite(command, primaryClient?.socket),
         onUnknownPacket: (packet) => packetCapture.record(packet),

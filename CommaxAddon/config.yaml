@@ -1,6 +1,6 @@
 name: "Commax Wallpad"
 description: "코맥스 애드온 TCP Socket Ver"
-version: "1.2.0"
+version: "1.2.1"
 slug: "commax_wallpad"
 url: "https://github.com/xepiloss/home-assistant"
 init: false
@@ -26,6 +26,7 @@ options:
   monthly_warm_usage: null
   monthly_heat_usage: null
   monthly_gas_usage: null
+  heating_device_count: 4
   unknown_packet_capture_enabled: false
   unknown_packet_capture_path: "/share/commax_unknown_packets.jsonl"
   elevator_mode: "off"
@@ -49,6 +50,7 @@ schema:
   monthly_warm_usage: "float?"
   monthly_heat_usage: "float?"
   monthly_gas_usage: "float?"
+  heating_device_count: "int"
   unknown_packet_capture_enabled: "bool"
   unknown_packet_capture_path: "str"
   elevator_mode: "list(off|mqtt|rs485)"

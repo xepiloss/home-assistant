@@ -19,6 +19,7 @@ const ENV_TO_OPTION = Object.freeze({
     COMMAX_MONTHLY_WARM_USAGE: 'monthly_warm_usage',
     COMMAX_MONTHLY_HEAT_USAGE: 'monthly_heat_usage',
     COMMAX_MONTHLY_GAS_USAGE: 'monthly_gas_usage',
+    COMMAX_HEATING_DEVICE_COUNT: 'heating_device_count',
     COMMAX_UNKNOWN_PACKET_CAPTURE_ENABLED: 'unknown_packet_capture_enabled',
     COMMAX_UNKNOWN_PACKET_CAPTURE_PATH: 'unknown_packet_capture_path',
     COMMAX_ELEVATOR_MODE: 'elevator_mode',
@@ -50,6 +51,9 @@ const DEFAULT_CONFIG = Object.freeze({
         enabled: false,
         path: '/share/commax_unknown_packets.jsonl',
     },
+    heating: {
+        deviceCount: 4,
+    },
     elevator: {
         mode: 'off',
         deviceId: '01',
@@ -63,6 +67,15 @@ const DEFAULT_CONFIG = Object.freeze({
 function parseInteger(value, fallback) {
     const parsed = Number.parseInt(value, 10);
     return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function parseBoundedInteger(value, fallback, min, max) {
+    const parsed = parseInteger(value, fallback);
+    if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+        return fallback;
+    }
+
+    return parsed;
 }
 
 function parseOptionalNumber(value) {
@@ -238,6 +251,9 @@ function normalizeConfig(raw = {}) {
         packetCapture: {
             enabled: parseBoolean(raw.unknown_packet_capture_enabled, DEFAULT_CONFIG.packetCapture.enabled),
             path: raw.unknown_packet_capture_path || DEFAULT_CONFIG.packetCapture.path,
+        },
+        heating: {
+            deviceCount: parseBoundedInteger(raw.heating_device_count, DEFAULT_CONFIG.heating.deviceCount, 1, 16),
         },
         elevator: normalizeElevatorConfig(raw),
     };

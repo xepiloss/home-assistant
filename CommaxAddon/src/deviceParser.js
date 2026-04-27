@@ -435,7 +435,7 @@ function parseOutletPacket(bytes) {
 function analyzeAndDiscoverOutlet(bytes, discoveredOutlets, mqttClient, options = {}) {
     const parsed = parseOutletPacket(bytes);
     if (!parsed) {
-        return;
+        return false;
     }
 
     const { saveState, topics } = buildContext(options);
@@ -528,6 +528,8 @@ function analyzeAndDiscoverOutlet(bytes, discoveredOutlets, mqttClient, options 
     } else {
         publishRetained(mqttClient, topics.path('outlet', deviceId, 'standby_power'), power);
     }
+
+    return true;
 }
 
 function isValidLightDeviceId(deviceId) {
@@ -762,7 +764,17 @@ function analyzeParkingAreaAndCarNumber(bytes, parkingState, mqttClient, options
     }
 }
 
-function parseTemperaturePacket(bytes) {
+function isValidTemperatureDeviceId(deviceId, maxDevices) {
+    if (typeof deviceId !== 'string' || !/^[0-9A-F]{2}$/i.test(deviceId)) {
+        return false;
+    }
+
+    const numericDeviceId = Number.parseInt(deviceId, 16);
+    return numericDeviceId >= 1
+        && (!Number.isFinite(maxDevices) || numericDeviceId <= maxDevices);
+}
+
+function parseTemperaturePacket(bytes, options = {}) {
     if (bytes.length !== 8 || ![0x82, 0x84].includes(bytes[0])) {
         return null;
     }
@@ -780,8 +792,13 @@ function parseTemperaturePacket(bytes) {
         state = 'heating';
     }
 
+    const deviceId = byteToHex(bytes[2]);
+    if (!isValidTemperatureDeviceId(deviceId, options.maxDevices)) {
+        return null;
+    }
+
     return {
-        deviceId: byteToHex(bytes[2]),
+        deviceId,
         state,
         currentTemp: bytes[3] === 0xFF ? null : decodeBcdString([bytes[3]]),
         targetTemp: bytes[4] === 0xFF ? null : decodeBcdString([bytes[4]]),
@@ -789,9 +806,11 @@ function parseTemperaturePacket(bytes) {
 }
 
 function analyzeAndDiscoverTemperature(bytes, discoveredTemps, mqttClient, options = {}) {
-    const parsed = parseTemperaturePacket(bytes);
+    const parsed = parseTemperaturePacket(bytes, {
+        maxDevices: options.maxDevices,
+    });
     if (!parsed) {
-        return;
+        return false;
     }
 
     const { saveState, topics } = buildContext(options);
@@ -838,6 +857,47 @@ function analyzeAndDiscoverTemperature(bytes, discoveredTemps, mqttClient, optio
     if (targetTemp !== null) {
         publishRetained(mqttClient, topics.path('temp', deviceId, 'target_temp'), targetTemp);
     }
+
+    return true;
+}
+
+function clearInvalidTemperatureDiscoveries(discoveredTemps, mqttClient, options = {}) {
+    const { saveState, topics } = buildContext(options);
+    const maxDevices = Number.isFinite(options.maxDevices) ? options.maxDevices : 16;
+    const cleanupLimit = Number.isFinite(options.cleanupLimit) ? options.cleanupLimit : 16;
+    const savedInvalidIds = [...discoveredTemps]
+        .filter((uniqueId) => uniqueId.startsWith('commax_temp_'))
+        .map((uniqueId) => uniqueId.replace('commax_temp_', ''))
+        .filter((deviceId) => !isValidTemperatureDeviceId(deviceId, options.maxDevices));
+    const proactiveInvalidIds = [];
+
+    for (let deviceId = maxDevices + 1; deviceId <= cleanupLimit; deviceId += 1) {
+        proactiveInvalidIds.push(byteToHex(deviceId));
+    }
+
+    const invalidIds = [...new Set([...savedInvalidIds, ...proactiveInvalidIds])];
+    if (invalidIds.length === 0) {
+        return false;
+    }
+
+    let removedSavedDiscovery = false;
+    invalidIds.forEach((deviceId) => {
+        publishRetained(mqttClient, topics.discovery('climate', `commax_temp_${deviceId}`), '');
+        publishRetained(mqttClient, topics.path('temp', deviceId, 'mode'), '');
+        publishRetained(mqttClient, topics.path('temp', deviceId, 'current_temp'), '');
+        publishRetained(mqttClient, topics.path('temp', deviceId, 'target_temp'), '');
+        publishAvailability(mqttClient, topics.availability('temp', deviceId), 'unavailable');
+        if (discoveredTemps.delete(`commax_temp_${deviceId}`)) {
+            removedSavedDiscovery = true;
+        }
+    });
+
+    log(`비활성 난방 Discovery 정리 요청 : 난방 ${invalidIds.map((deviceId) => deviceId.toUpperCase()).join(', ')}`);
+
+    if (removedSavedDiscovery) {
+        void saveState();
+    }
+    return true;
 }
 
 function parseVentilationPacket(bytes) {
@@ -858,7 +918,7 @@ function parseVentilationPacket(bytes) {
 function analyzeAndDiscoverVentilation(bytes, discoveredFans, mqttClient, options = {}) {
     const parsed = parseVentilationPacket(bytes);
     if (!parsed) {
-        return;
+        return false;
     }
 
     const { saveState, topics } = buildContext(options);
@@ -905,6 +965,8 @@ function analyzeAndDiscoverVentilation(bytes, discoveredFans, mqttClient, option
     publishRetained(mqttClient, topics.path('fan', deviceId, 'state'), state);
     publishRetained(mqttClient, topics.path('fan', deviceId, 'mode'), modeStr);
     publishRetained(mqttClient, topics.path('fan', deviceId, 'speed'), speedStr);
+
+    return true;
 }
 
 function getElevatorFrameKind(bytes, elevatorConfig = {}) {
@@ -1123,7 +1185,7 @@ function parseMasterLightPacket(bytes) {
 function analyzeAndDiscoverMasterLight(bytes, discoveredMasterLights, mqttClient, options = {}) {
     const parsed = parseMasterLightPacket(bytes);
     if (!parsed) {
-        return;
+        return false;
     }
 
     const { saveState, topics } = buildContext(options);
@@ -1155,6 +1217,8 @@ function analyzeAndDiscoverMasterLight(bytes, discoveredMasterLights, mqttClient
     }
 
     publishRetained(mqttClient, topics.path('master_light', 'state'), parsed.state === 0x01 ? 'ON' : 'OFF');
+
+    return true;
 }
 
 function analyzeAndDiscoverAirQuality(bytes, discoveredSensors, mqttClient, options = {}) {
@@ -2063,6 +2127,7 @@ module.exports = {
     clearElevatorDiscovery,
     clearElevatorFloorDiscovery,
     clearInvalidLightDiscoveries,
+    clearInvalidTemperatureDiscoveries,
     applyConfiguredMonthlyUsage,
     calculateMonthlyMeteringValues,
     getMonthlyMeteringPeriod,

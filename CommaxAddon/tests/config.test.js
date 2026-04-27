@@ -18,6 +18,7 @@ test('normalizeConfig fills defaults and keeps overrides', () => {
     assert.equal(config.metering.port, 8899);
     assert.equal(config.monthlyMeteringUsageOverrides.period, '');
     assert.equal(config.monthlyMeteringUsageOverrides.values.electric_acc_meter, undefined);
+    assert.equal(config.heating.deviceCount, 4);
     assert.equal(config.packetCapture.enabled, false);
     assert.equal(config.packetCapture.path, '/share/commax_unknown_packets.jsonl');
 });
@@ -35,6 +36,7 @@ test('readEnvOptions maps shell env vars to addon options', () => {
         EW11_METERING_PORT: '8897',
         COMMAX_MONTHLY_METERING_USAGE_PERIOD: '2026-04',
         COMMAX_MONTHLY_ELECTRIC_USAGE: '213.8',
+        COMMAX_HEATING_DEVICE_COUNT: '4',
         COMMAX_UNKNOWN_PACKET_CAPTURE_ENABLED: 'true',
         COMMAX_UNKNOWN_PACKET_CAPTURE_PATH: '/share/custom_unknown.jsonl',
         COMMAX_ELEVATOR_MODE: 'rs485',
@@ -53,6 +55,7 @@ test('readEnvOptions maps shell env vars to addon options', () => {
         ew11_metering_port: '8897',
         monthly_metering_usage_period: '2026-04',
         monthly_electric_usage: '213.8',
+        heating_device_count: '4',
         unknown_packet_capture_enabled: 'true',
         unknown_packet_capture_path: '/share/custom_unknown.jsonl',
         elevator_mode: 'rs485',
@@ -94,6 +97,13 @@ test('normalizeConfig accepts disabled elevator mode', () => {
 
     assert.equal(config.elevator.mode, 'off');
     assert.equal(config.elevator.invalid.mode, '');
+});
+
+test('normalizeConfig parses heating device count with safe bounds', () => {
+    assert.equal(normalizeConfig({ heating_device_count: '8' }).heating.deviceCount, 8);
+    assert.equal(normalizeConfig({ heating_device_count: '0' }).heating.deviceCount, 4);
+    assert.equal(normalizeConfig({ heating_device_count: 'garbage' }).heating.deviceCount, 4);
+    assert.equal(normalizeConfig({ heating_device_count: '17' }).heating.deviceCount, 4);
 });
 
 test('parseHexFrame accepts only 8-byte checksum-valid frames', () => {

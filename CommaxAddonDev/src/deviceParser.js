@@ -863,26 +863,40 @@ function analyzeAndDiscoverTemperature(bytes, discoveredTemps, mqttClient, optio
 
 function clearInvalidTemperatureDiscoveries(discoveredTemps, mqttClient, options = {}) {
     const { saveState, topics } = buildContext(options);
-    const invalidIds = [...discoveredTemps]
+    const maxDevices = Number.isFinite(options.maxDevices) ? options.maxDevices : 16;
+    const cleanupLimit = Number.isFinite(options.cleanupLimit) ? options.cleanupLimit : 16;
+    const savedInvalidIds = [...discoveredTemps]
         .filter((uniqueId) => uniqueId.startsWith('commax_temp_'))
         .map((uniqueId) => uniqueId.replace('commax_temp_', ''))
         .filter((deviceId) => !isValidTemperatureDeviceId(deviceId, options.maxDevices));
+    const proactiveInvalidIds = [];
 
+    for (let deviceId = maxDevices + 1; deviceId <= cleanupLimit; deviceId += 1) {
+        proactiveInvalidIds.push(byteToHex(deviceId));
+    }
+
+    const invalidIds = [...new Set([...savedInvalidIds, ...proactiveInvalidIds])];
     if (invalidIds.length === 0) {
         return false;
     }
 
+    let removedSavedDiscovery = false;
     invalidIds.forEach((deviceId) => {
         publishRetained(mqttClient, topics.discovery('climate', `commax_temp_${deviceId}`), '');
         publishRetained(mqttClient, topics.path('temp', deviceId, 'mode'), '');
         publishRetained(mqttClient, topics.path('temp', deviceId, 'current_temp'), '');
         publishRetained(mqttClient, topics.path('temp', deviceId, 'target_temp'), '');
         publishAvailability(mqttClient, topics.availability('temp', deviceId), 'unavailable');
-        discoveredTemps.delete(`commax_temp_${deviceId}`);
-        log(`비활성 난방 Discovery 정리 : 난방 ${deviceId}`);
+        if (discoveredTemps.delete(`commax_temp_${deviceId}`)) {
+            removedSavedDiscovery = true;
+        }
     });
 
-    void saveState();
+    log(`비활성 난방 Discovery 정리 요청 : 난방 ${invalidIds.map((deviceId) => deviceId.toUpperCase()).join(', ')}`);
+
+    if (removedSavedDiscovery) {
+        void saveState();
+    }
     return true;
 }
 

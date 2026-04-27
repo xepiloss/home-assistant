@@ -118,6 +118,26 @@ test('clearInvalidTemperatureDiscoveries removes heating entities above configur
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/temp/05/availability' && call.message === 'unavailable'));
 });
 
+test('clearInvalidTemperatureDiscoveries clears retained heating discovery even when local state missed it', () => {
+    const mqttClient = createMqttStub();
+    const discoveredTemps = new Set(['commax_temp_01']);
+    let saveCount = 0;
+
+    assert.equal(clearInvalidTemperatureDiscoveries(discoveredTemps, mqttClient, {
+        saveState: () => {
+            saveCount += 1;
+        },
+        topics: createTopicBuilder('devcommax'),
+        maxDevices: 4,
+        cleanupLimit: 8,
+    }), true);
+
+    assert.equal(saveCount, 0);
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_05/config' && call.message === ''));
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_08/config' && call.message === ''));
+    assert(!mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_04/config' && call.message === ''));
+});
+
 test('parseMasterLightPacket ignores elevator packets sharing the same header', () => {
     const bytes = [0xA0, 0x01, 0x01, 0x00, 0x28, 0xD7, 0x00];
     bytes.push(calculateChecksum(bytes));

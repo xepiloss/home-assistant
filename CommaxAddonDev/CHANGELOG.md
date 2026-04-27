@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.37-dev - 2026-04-27
+
+### Fixed
+
+- 상태 파일에 기록되지 않은 초과 난방 MQTT Discovery retained 설정도 `heating_device_count` 기준으로 강제 정리하도록 보강했습니다.
+
 ## 1.1.36-dev - 2026-04-27
 
 ### Added

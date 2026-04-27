@@ -1,6 +1,6 @@
 name: "Commax Wallpad"
 description: "코맥스 애드온 TCP Socket Ver"
-version: "1.1.4"
+version: "1.2.0"
 slug: "commax_wallpad"
 url: "https://github.com/xepiloss/home-assistant"
 init: false
@@ -28,6 +28,11 @@ options:
   monthly_gas_usage: null
   unknown_packet_capture_enabled: false
   unknown_packet_capture_path: "/share/commax_unknown_packets.jsonl"
+  elevator_mode: "off"
+  elevator_rs485_call_command: "A0 01 01 00 08 D7 00 81"
+  elevator_rs485_call_on_frame: "22 01 40 07 00 00 00 6A"
+  elevator_rs485_calling_frame: "26 01 01 42 00 01 05 70"
+  elevator_rs485_released_frame: "26 01 01 00 00 00 00 28"
 schema:
   mqtt_topic_prefix: "str"
   mqtt_broker_url: "str"
@@ -46,5 +51,10 @@ schema:
   monthly_gas_usage: "float?"
   unknown_packet_capture_enabled: "bool"
   unknown_packet_capture_path: "str"
+  elevator_mode: "list(off|mqtt|rs485)"
+  elevator_rs485_call_command: "str?"
+  elevator_rs485_call_on_frame: "str?"
+  elevator_rs485_calling_frame: "str?"
+  elevator_rs485_released_frame: "str?"
 map:
   - "share:rw"

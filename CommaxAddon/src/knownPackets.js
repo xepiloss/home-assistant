@@ -1,17 +1,18 @@
 const { calculateChecksum } = require('./deviceParser');
 
 const KNOWN_IGNORED_PRIMARY_HEADERS = new Set([
-    0x02, // thermostat query
-    0x0F, // life information query
-    0x10, // gas query/auxiliary
-    0x11, // gas command
-    0x20, // master light query
+    0x02, // thermostat query, paired with 0x04 command and 0x82/0x84 state frames
+    0x0F, // life information query, paired with 0x8F/0x24/0x25 life information frames
+    0x10, // gas query/auxiliary, paired with 0x11 command and 0x90 state frames
+    0x11, // gas command observed on the wallpad bus
+    0x20, // master light query, paired with 0x22 command and 0xA0/0xA2 state frames
     0x23, // elevator response/status on some Commax models
-    0x30, // light query
-    0x76, // ventilation query
+    0x30, // light query, paired with 0x31 command and 0xB0/0xB1 state frames
+    0x76, // ventilation query, paired with 0x78 command and 0xF6/0xF8 state frames
     0x77, // ventilation auxiliary/query
-    0x79, // outlet query
-    0x90, // gas status
+    0x79, // outlet query, paired with 0x7A command and 0xF9/0xFA state frames
+    0x90, // gas status frame
+    0xA4, // life information ACK, observed after 0x24 frames
 ]);
 
 // Observed unchanged on the main EW11 over 2026-04-25 04:00-10:39 KST.

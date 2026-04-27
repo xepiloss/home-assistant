@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { normalizeConfig, parseMonthlyMeteringPeriod, readEnvOptions } = require('../src/config');
+const { normalizeConfig, parseHexFrame, parseMonthlyMeteringPeriod, readEnvOptions } = require('../src/config');
 const { createTopicBuilder } = require('../src/topics');
 
 test('normalizeConfig fills defaults and keeps overrides', () => {
@@ -37,6 +37,8 @@ test('readEnvOptions maps shell env vars to addon options', () => {
         COMMAX_MONTHLY_ELECTRIC_USAGE: '213.8',
         COMMAX_UNKNOWN_PACKET_CAPTURE_ENABLED: 'true',
         COMMAX_UNKNOWN_PACKET_CAPTURE_PATH: '/share/custom_unknown.jsonl',
+        COMMAX_ELEVATOR_MODE: 'rs485',
+        COMMAX_ELEVATOR_RS485_CALL_COMMAND: 'A0 01 01 00 08 D7 00 81',
     });
 
     assert.deepEqual(options, {
@@ -53,7 +55,51 @@ test('readEnvOptions maps shell env vars to addon options', () => {
         monthly_electric_usage: '213.8',
         unknown_packet_capture_enabled: 'true',
         unknown_packet_capture_path: '/share/custom_unknown.jsonl',
+        elevator_mode: 'rs485',
+        elevator_rs485_call_command: 'A0 01 01 00 08 D7 00 81',
     });
+});
+
+test('normalizeConfig parses elevator call mode and custom RS485 frames', () => {
+    const config = normalizeConfig({
+        elevator_mode: 'rs485',
+        elevator_rs485_call_command: 'A001010008D70081',
+        elevator_rs485_call_on_frame: '22 01 40 07 00 00 00 6A',
+        elevator_rs485_calling_frame: '2601014200010570',
+        elevator_rs485_released_frame: '26 01 01 00 00 00 00 28',
+    });
+
+    assert.equal(config.elevator.mode, 'rs485');
+    assert.equal(config.elevator.callCommand.hex, 'A0 01 01 00 08 D7 00 81');
+    assert.deepEqual(config.elevator.frames.callOn.bytes, [0x22, 0x01, 0x40, 0x07, 0x00, 0x00, 0x00, 0x6A]);
+    assert.equal(config.elevator.invalid.callCommand, '');
+});
+
+test('normalizeConfig keeps elevator defaults when invalid inputs are provided', () => {
+    const config = normalizeConfig({
+        elevator_mode: 'soap',
+        elevator_rs485_call_command: 'A0 01 01 00 08 D7 00 82',
+    });
+
+    assert.equal(config.elevator.mode, 'off');
+    assert.equal(config.elevator.invalid.mode, 'soap');
+    assert.equal(config.elevator.callCommand.hex, '');
+    assert.equal(config.elevator.invalid.callCommand, 'A0 01 01 00 08 D7 00 82');
+});
+
+test('normalizeConfig accepts disabled elevator mode', () => {
+    const config = normalizeConfig({
+        elevator_mode: 'off',
+    });
+
+    assert.equal(config.elevator.mode, 'off');
+    assert.equal(config.elevator.invalid.mode, '');
+});
+
+test('parseHexFrame accepts only 8-byte checksum-valid frames', () => {
+    assert.deepEqual(parseHexFrame('22 01 40 07 00 00 00 6A').bytes, [0x22, 0x01, 0x40, 0x07, 0x00, 0x00, 0x00, 0x6A]);
+    assert.equal(parseHexFrame('22 01 40 07 00 00 00 6B').hex, '');
+    assert.equal(parseHexFrame('not hex').hex, '');
 });
 
 test('normalizeConfig parses optional monthly metering usage overrides', () => {

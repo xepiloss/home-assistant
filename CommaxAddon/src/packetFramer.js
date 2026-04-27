@@ -82,9 +82,11 @@ function resolveFrameLength(buffer, packetLengths) {
     return frameLength;
 }
 
-function findRecoverableStateFrame(buffer, packetLengths) {
+function findRecoverableFrame(buffer, packetLengths) {
+    let incompleteCandidate = null;
+
     for (let index = 1; index < buffer.length; index += 1) {
-        if (!RECOVERABLE_STATE_HEADERS.has(buffer[index])) {
+        if (!packetLengths.has(buffer[index])) {
             continue;
         }
 
@@ -94,10 +96,11 @@ function findRecoverableStateFrame(buffer, packetLengths) {
         }
 
         if (buffer.length - index < frameLength) {
-            return {
+            incompleteCandidate = {
                 index,
                 needsMoreData: true,
             };
+            continue;
         }
 
         const frame = buffer.subarray(index, index + frameLength);
@@ -105,12 +108,13 @@ function findRecoverableStateFrame(buffer, packetLengths) {
             return {
                 index,
                 frame,
+                isStateFrame: RECOVERABLE_STATE_HEADERS.has(frame[0]),
                 needsMoreData: false,
             };
         }
     }
 
-    return null;
+    return incompleteCandidate;
 }
 
 class PacketFramer {
@@ -162,7 +166,7 @@ class PacketFramer {
                 && !RECOVERABLE_STATE_HEADERS.has(frame[0])
                 && !hasValidChecksum(frame)
             ) {
-                const recoverable = findRecoverableStateFrame(this.buffer, this.packetLengths);
+                const recoverable = findRecoverableFrame(this.buffer, this.packetLengths);
                 if (recoverable) {
                     if (recoverable.index > 0) {
                         dropped.push(this.buffer.subarray(0, recoverable.index));
@@ -173,9 +177,11 @@ class PacketFramer {
                         break;
                     }
 
-                    frames.push([...recoverable.frame]);
-                    recovered.push([...recoverable.frame]);
-                    this.buffer = this.buffer.subarray(recoverable.frame.length);
+                    if (recoverable.isStateFrame) {
+                        frames.push([...recoverable.frame]);
+                        recovered.push([...recoverable.frame]);
+                        this.buffer = this.buffer.subarray(recoverable.frame.length);
+                    }
                     continue;
                 }
             }

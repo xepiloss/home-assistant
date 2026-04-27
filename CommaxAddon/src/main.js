@@ -11,8 +11,11 @@ const { createDiagnostics } = require('./diagnostics');
 const { createTopicBuilder } = require('./topics');
 const {
     analyzeAndDiscoverAirQuality,
+    analyzeAndDiscoverElevator,
     analyzeAndDiscoverLifeInfo,
-    analyzeAndDiscoverLifeInfoTemperature,
+    analyzeAndDiscoverLifeInfoCurrentWeather,
+    analyzeAndDiscoverLifeInfoForecast,
+    analyzeAndDiscoverLifeInfoOutdoorPm10,
     analyzeAndDiscoverLight,
     analyzeAndDiscoverMasterLight,
     analyzeAndDiscoverMetering,
@@ -21,6 +24,10 @@ const {
     analyzeAndDiscoverVentilation,
     analyzeAndDiscoverWallpadTime,
     analyzeParkingAreaAndCarNumber,
+    clearElevatorDiscovery,
+    clearElevatorFloorDiscovery,
+    clearInvalidLightDiscoveries,
+    publishElevatorDiscovery,
 } = require('./deviceParser');
 const { loadState, saveState } = require('./stateManager');
 
@@ -113,7 +120,26 @@ function collectPrimaryAvailabilityTopics(state, topics) {
     }
 
     if (state.lifeInfoState?.lifeInfoTemperatureDiscovered) {
-        availabilityTopics.push(topics.availability('life_info', 'temperature'));
+        availabilityTopics.push(topics.availability('life_info', 'outdoor_temperature'));
+    }
+
+    if (state.lifeInfoState?.lifeInfoCurrentWeatherDiscovered) {
+        availabilityTopics.push(
+            topics.availability('life_info', 'outdoor_weather'),
+            topics.availability('life_info', 'outdoor_humidity')
+        );
+    }
+
+    if (state.lifeInfoState?.lifeInfoOutdoorPm10Discovered) {
+        availabilityTopics.push(topics.availability('life_info', 'outdoor_pm10'));
+    }
+
+    if (state.lifeInfoState?.lifeInfoForecastDiscovered) {
+        availabilityTopics.push(
+            topics.availability('life_info', 'forecast_weather'),
+            topics.availability('life_info', 'forecast_high_temperature'),
+            topics.availability('life_info', 'forecast_low_temperature')
+        );
     }
 
     return availabilityTopics;
@@ -312,9 +338,44 @@ function logMonthlyMeteringUsageConfig(monthlyUsageConfig, date = new Date()) {
     log(`월간 검침 보정값 입력 확인: 시작일=${systemDate.dateText}, 시스템 기준 월=${systemDate.period}, 보정 월=${monthlyUsageConfig.period}, 입력값=${valuesText}. ${usagePlan}`);
 }
 
-function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket }) {
+function logElevatorConfig(elevatorConfig, topicPrefix) {
+    const invalidEntries = Object.entries(elevatorConfig?.invalid || {})
+        .filter(([, value]) => value)
+        .map(([key, value]) => `${key}=${value}`);
+
+    if (invalidEntries.length > 0) {
+        log(`엘리베이터 RS485 설정값 무시: ${invalidEntries.join(', ')}. 유효한 8바이트 checksum 프레임 또는 허용 모드(off/mqtt/rs485)만 사용합니다.`);
+    }
+
+    if (elevatorConfig?.mode === 'off') {
+        log('엘리베이터 호출 모드: 비활성. Discovery 발행과 MQTT/RS485 호출 처리를 하지 않습니다.');
+        return;
+    }
+
+    if (elevatorConfig?.mode === 'rs485') {
+        log(`엘리베이터 호출 모드: RS485 직접 처리. 호출명령=${elevatorConfig.callCommand.hex || '미설정'}, 호출ON=${elevatorConfig.frames.callOn.hex || '미설정'}, 호출중=${elevatorConfig.frames.calling.hex || '미설정'}, 해제=${elevatorConfig.frames.released.hex || '미설정'}`);
+        return;
+    }
+
+    log(`엘리베이터 호출 모드: MQTT 전달(SOAP 외부 애드온 처리). ${topicPrefix}/elevator/01/set 토픽은 유지하고 RS485 호출 명령은 보내지 않습니다.`);
+}
+
+function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket, elevatorConfig }) {
     return (bytes) => {
         packetMonitor.recordPacket();
+
+        if (analyzeAndDiscoverElevator(bytes, state.discoveredElevators, mqttClient, {
+            saveState: saveCurrentState,
+            topics,
+            elevator: elevatorConfig,
+        })) {
+            commandHandler.handleAckOrState(bytes);
+            const socket = getSocket();
+            if (socket) {
+                commandHandler.dequeueAndWrite(socket);
+            }
+            return;
+        }
 
         switch (bytes[0]) {
             case 0xF9:
@@ -324,8 +385,9 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 break;
             case 0xB0:
             case 0xB1:
-                analyzeAndDiscoverLight(bytes, state.discoveredLights, mqttClient, { saveState: saveCurrentState, topics });
-                commandHandler.handleAckOrState(bytes);
+                if (analyzeAndDiscoverLight(bytes, state.discoveredLights, mqttClient, { saveState: saveCurrentState, topics })) {
+                    commandHandler.handleAckOrState(bytes);
+                }
                 break;
             case 0x2A:
             case 0x80:
@@ -360,17 +422,43 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 }
                 break;
             case 0x24: {
-                const handled = analyzeAndDiscoverLifeInfoTemperature(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
+                const handledCurrentWeather = analyzeAndDiscoverLifeInfoCurrentWeather(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
+                const handledOutdoorPm10 = !handledCurrentWeather
+                    && analyzeAndDiscoverLifeInfoOutdoorPm10(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
+                const handled = handledCurrentWeather || handledOutdoorPm10;
                 packetCapture.record({
                     source: '메인 EW11',
-                    kind: handled ? 'life_info_temperature_frame' : 'unhandled_frame',
+                    kind: handledCurrentWeather
+                        ? 'life_info_current_weather_frame'
+                        : handledOutdoorPm10
+                            ? 'life_info_outdoor_pm10_frame'
+                            : 'unhandled_frame',
                     bytes,
-                    note: handled
-                        ? 'Confirmed life information temperature frame recorded for unmapped bytes such as unknown_code.'
+                    note: handledCurrentWeather
+                        ? 'Confirmed life information current outdoor weather frame.'
+                        : handledOutdoorPm10
+                            ? 'Confirmed life information outdoor PM10 frame.'
                         : 'Framed packet with a known length, but no parser handled it.',
                 });
                 break;
             }
+            case 0x25:
+                if (analyzeAndDiscoverLifeInfoForecast(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'life_info_forecast_frame',
+                        bytes,
+                        note: 'Confirmed life information forecast weather frame.',
+                    });
+                } else {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'unhandled_frame',
+                        bytes,
+                        note: 'Framed packet with a known length, but no parser handled it.',
+                    });
+                }
+                break;
             case 0x8F:
                 if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
                     if (!isKnownStablePrimaryFrame(bytes)) {
@@ -479,6 +567,7 @@ async function main() {
 
     const config = loadConfig();
     logMonthlyMeteringUsageConfig(config.monthlyMeteringUsageOverrides);
+    logElevatorConfig(config.elevator, config.mqtt.topicPrefix);
     const topics = createTopicBuilder(config.mqtt.topicPrefix);
     const state = await loadState();
     const saveCurrentState = () => saveState(state);
@@ -487,11 +576,39 @@ async function main() {
         filePath: config.packetCapture.path,
     });
 
-    const commandHandler = new CommandHandler({ topicPrefix: config.mqtt.topicPrefix });
+    const commandHandler = new CommandHandler({
+        topicPrefix: config.mqtt.topicPrefix,
+        elevator: config.elevator,
+    });
 
     let mqttClient;
     mqttClient = new MqttClient(config.mqtt, (topic, message) => {
         commandHandler.handleMessage(topic, message, mqttClient);
+    });
+
+    if (config.elevator.mode === 'off') {
+        clearElevatorDiscovery(state.discoveredElevators, mqttClient, {
+            saveState: saveCurrentState,
+            topics,
+            elevator: config.elevator,
+        });
+    } else if (config.elevator.mode === 'mqtt') {
+        publishElevatorDiscovery(state.discoveredElevators, mqttClient, {
+            saveState: saveCurrentState,
+            topics,
+            elevator: config.elevator,
+            initialStatus: 'OFF',
+        });
+    } else if (config.elevator.mode === 'rs485') {
+        clearElevatorFloorDiscovery(state.discoveredElevators, mqttClient, {
+            saveState: saveCurrentState,
+            topics,
+            elevator: config.elevator,
+        });
+    }
+    clearInvalidLightDiscoveries(state.discoveredLights, mqttClient, {
+        saveState: saveCurrentState,
+        topics,
     });
 
     const availabilityController = createAvailabilityController(state, mqttClient, topics);
@@ -518,6 +635,7 @@ async function main() {
             packetMonitor,
             packetCapture,
             getSocket: () => primaryClient?.socket,
+            elevatorConfig: config.elevator,
         }),
         writeCommand: (command) => commandHandler.safeWrite(command, primaryClient?.socket),
         onUnknownPacket: (packet) => packetCapture.record(packet),

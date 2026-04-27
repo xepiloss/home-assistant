@@ -4,6 +4,7 @@ const { formatBytes } = require('./packetFramer');
 const { log, logError } = require('./utils');
 
 const DEFAULT_WRITE_DELAY_MS = 1000;
+const MAX_RECENT_SEEN_AT = 5;
 
 function createPacketKey(record) {
     return [record.source, record.kind, record.hex].join('\t');
@@ -11,6 +12,30 @@ function createPacketKey(record) {
 
 function normalizeTimestamp(value, fallback) {
     return typeof value === 'string' && value ? value : fallback;
+}
+
+function normalizePositiveInteger(value, fallback = 0) {
+    return Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+function normalizePositiveNumber(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function toTimestampMs(timestamp) {
+    const parsed = Date.parse(timestamp);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function calculateIntervalMs(previousTimestamp, nextTimestamp) {
+    const previousMs = toTimestampMs(previousTimestamp);
+    const nextMs = toTimestampMs(nextTimestamp);
+
+    if (previousMs === undefined || nextMs === undefined || nextMs < previousMs) {
+        return undefined;
+    }
+
+    return nextMs - previousMs;
 }
 
 function normalizeSeenTimestamps(record, fallback) {
@@ -27,6 +52,75 @@ function normalizeSeenTimestamps(record, fallback) {
     }
 
     return fallback ? [fallback] : [];
+}
+
+function trimRecentTimestamps(timestamps) {
+    return timestamps
+        .filter((value) => typeof value === 'string' && value)
+        .slice(-MAX_RECENT_SEEN_AT);
+}
+
+function mergeRecentTimestamps(existingTimestamps, incomingTimestamps) {
+    return trimRecentTimestamps([
+        ...(Array.isArray(existingTimestamps) ? existingTimestamps : []),
+        ...(Array.isArray(incomingTimestamps) ? incomingTimestamps : []),
+    ]);
+}
+
+function summarizeIntervals(timestamps) {
+    const intervals = [];
+
+    for (let index = 1; index < timestamps.length; index += 1) {
+        const intervalMs = calculateIntervalMs(timestamps[index - 1], timestamps[index]);
+
+        if (intervalMs !== undefined) {
+            intervals.push(intervalMs);
+        }
+    }
+
+    if (intervals.length === 0) {
+        return { repeat_interval_count: 0 };
+    }
+
+    const totalMs = intervals.reduce((sum, intervalMs) => sum + intervalMs, 0);
+
+    return {
+        repeat_interval_count: intervals.length,
+        repeat_interval_last_ms: intervals[intervals.length - 1],
+        repeat_interval_min_ms: Math.min(...intervals),
+        repeat_interval_max_ms: Math.max(...intervals),
+        repeat_interval_avg_ms: Math.round(totalMs / intervals.length),
+    };
+}
+
+function normalizeRepeatSummary(record, timestamps, hasFullSeenAt) {
+    if (hasFullSeenAt) {
+        return summarizeIntervals(timestamps);
+    }
+
+    const intervalCount = normalizePositiveInteger(record.repeat_interval_count);
+    const lastIntervalMs = normalizePositiveNumber(record.repeat_interval_last_ms);
+    const minIntervalMs = normalizePositiveNumber(record.repeat_interval_min_ms);
+    const maxIntervalMs = normalizePositiveNumber(record.repeat_interval_max_ms);
+    const averageIntervalMs = normalizePositiveNumber(record.repeat_interval_avg_ms);
+
+    if (
+        intervalCount > 0
+        && lastIntervalMs !== undefined
+        && minIntervalMs !== undefined
+        && maxIntervalMs !== undefined
+        && averageIntervalMs !== undefined
+    ) {
+        return {
+            repeat_interval_count: intervalCount,
+            repeat_interval_last_ms: lastIntervalMs,
+            repeat_interval_min_ms: minIntervalMs,
+            repeat_interval_max_ms: maxIntervalMs,
+            repeat_interval_avg_ms: averageIntervalMs,
+        };
+    }
+
+    return summarizeIntervals(timestamps);
 }
 
 function createPacketCapture({
@@ -48,9 +142,60 @@ function createPacketCapture({
         version += 1;
     }
 
-    function mergeSeenTimestamps(existingTimestamps, incomingTimestamps) {
-        return [...existingTimestamps, ...incomingTimestamps]
-            .filter((value) => typeof value === 'string' && value);
+    function addRepeatInterval(record, intervalMs) {
+        if (intervalMs === undefined) {
+            return;
+        }
+
+        const previousCount = normalizePositiveInteger(record.repeat_interval_count);
+        const previousAverage = normalizePositiveNumber(record.repeat_interval_avg_ms) || 0;
+        const nextCount = previousCount + 1;
+
+        record.repeat_interval_count = nextCount;
+        record.repeat_interval_last_ms = intervalMs;
+        record.repeat_interval_min_ms = Math.min(
+            normalizePositiveNumber(record.repeat_interval_min_ms) ?? intervalMs,
+            intervalMs,
+        );
+        record.repeat_interval_max_ms = Math.max(
+            normalizePositiveNumber(record.repeat_interval_max_ms) ?? intervalMs,
+            intervalMs,
+        );
+        record.repeat_interval_avg_ms = Math.round(((previousAverage * previousCount) + intervalMs) / nextCount);
+    }
+
+    function mergeRepeatSummary(existing, incoming) {
+        const incomingCount = normalizePositiveInteger(incoming.repeat_interval_count);
+
+        if (incomingCount === 0) {
+            return;
+        }
+
+        const existingCount = normalizePositiveInteger(existing.repeat_interval_count);
+        const existingAverage = normalizePositiveNumber(existing.repeat_interval_avg_ms) || 0;
+        const incomingAverage = normalizePositiveNumber(incoming.repeat_interval_avg_ms) || 0;
+        const mergedCount = existingCount + incomingCount;
+        const minIntervals = [
+            normalizePositiveNumber(existing.repeat_interval_min_ms),
+            normalizePositiveNumber(incoming.repeat_interval_min_ms),
+        ].filter((value) => value !== undefined);
+        const maxIntervals = [
+            normalizePositiveNumber(existing.repeat_interval_max_ms),
+            normalizePositiveNumber(incoming.repeat_interval_max_ms),
+        ].filter((value) => value !== undefined);
+
+        existing.repeat_interval_count = mergedCount;
+        existing.repeat_interval_last_ms = normalizePositiveNumber(incoming.repeat_interval_last_ms)
+            ?? existing.repeat_interval_last_ms;
+        existing.repeat_interval_min_ms = minIntervals.length > 0
+            ? Math.min(...minIntervals)
+            : existing.repeat_interval_min_ms;
+        existing.repeat_interval_max_ms = maxIntervals.length > 0
+            ? Math.max(...maxIntervals)
+            : existing.repeat_interval_max_ms;
+        existing.repeat_interval_avg_ms = Math.round(
+            ((existingAverage * existingCount) + (incomingAverage * incomingCount)) / mergedCount,
+        );
     }
 
     function upsertRecord(incoming) {
@@ -63,11 +208,14 @@ function createPacketCapture({
             return;
         }
 
+        const previousLastSeen = existing.last_seen;
         existing.note = incoming.note || existing.note;
         existing.first_seen = existing.first_seen <= incoming.first_seen ? existing.first_seen : incoming.first_seen;
         existing.last_seen = existing.last_seen >= incoming.last_seen ? existing.last_seen : incoming.last_seen;
         existing.count += incoming.count;
-        existing.seen_at = mergeSeenTimestamps(existing.seen_at, incoming.seen_at);
+        mergeRepeatSummary(existing, incoming);
+        addRepeatInterval(existing, calculateIntervalMs(previousLastSeen, incoming.first_seen));
+        existing.recent_seen_at = mergeRecentTimestamps(existing.recent_seen_at, incoming.recent_seen_at);
         markDirty();
     }
 
@@ -75,7 +223,9 @@ function createPacketCapture({
         const fallbackTimestamp = normalizeTimestamp(record.timestamp, new Date().toISOString());
         const firstSeen = normalizeTimestamp(record.first_seen, fallbackTimestamp);
         const lastSeen = normalizeTimestamp(record.last_seen, fallbackTimestamp);
+        const hasFullSeenAt = Array.isArray(record.seen_at) && record.seen_at.length > 0;
         const seenAt = normalizeSeenTimestamps(record, lastSeen);
+        const repeatSummary = normalizeRepeatSummary(record, seenAt, hasFullSeenAt);
 
         return {
             source: record.source,
@@ -87,7 +237,8 @@ function createPacketCapture({
             first_seen: firstSeen <= lastSeen ? firstSeen : lastSeen,
             last_seen: lastSeen >= firstSeen ? lastSeen : firstSeen,
             count: Number.isInteger(record.count) && record.count > 0 ? record.count : seenAt.length || 1,
-            seen_at: seenAt,
+            recent_seen_at: trimRecentTimestamps(seenAt),
+            ...repeatSummary,
         };
     }
 
@@ -103,7 +254,15 @@ function createPacketCapture({
                     const normalized = normalizeExistingRecord(parsed);
                     const key = createPacketKey(normalized);
 
-                    if (records.has(key) || parsed.timestamp || parsed.recent_seen_at || !parsed.seen_at || !parsed.first_seen || !parsed.last_seen) {
+                    if (
+                        records.has(key)
+                        || parsed.timestamp
+                        || parsed.seen_at
+                        || !parsed.recent_seen_at
+                        || !parsed.first_seen
+                        || !parsed.last_seen
+                        || !Number.isInteger(parsed.count)
+                    ) {
                         needsRewrite = true;
                     }
 
@@ -181,7 +340,8 @@ function createPacketCapture({
             first_seen: timestamp,
             last_seen: timestamp,
             count: 1,
-            seen_at: [timestamp],
+            recent_seen_at: [timestamp],
+            repeat_interval_count: 0,
         };
     }
 

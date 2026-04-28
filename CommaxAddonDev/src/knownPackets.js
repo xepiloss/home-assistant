@@ -2,7 +2,7 @@ const { calculateChecksum } = require('./deviceParser');
 
 const KNOWN_IGNORED_PRIMARY_HEADERS = new Set([
     0x02, // thermostat query, paired with 0x04 command and 0x82/0x84 state frames
-    0x0F, // life information query, paired with 0x8F/0x24/0x25 life information frames
+    0x0F, // auxiliary query observed near 0x8F and confirmed 0x24/0x25 information frames
     0x10, // gas query/auxiliary, paired with 0x11 command and 0x90 state frames
     0x11, // gas command observed on the wallpad bus
     0x20, // master light query, paired with 0x22 command and 0xA0/0xA2 state frames
@@ -11,6 +11,7 @@ const KNOWN_IGNORED_PRIMARY_HEADERS = new Set([
     0x76, // ventilation query, paired with 0x78 command and 0xF6/0xF8 state frames
     0x77, // ventilation auxiliary/query
     0x79, // outlet query, paired with 0x7A command and 0xF9/0xFA state frames
+    0x8F, // unknown repeating heartbeat candidate; confirmed weather/dust payloads use 0x24/0x25
     0x90, // gas status frame
     0xA4, // life information ACK, observed after 0x24 frames
 ]);
@@ -25,7 +26,6 @@ const KNOWN_STABLE_PRIMARY_FRAMES = new Set([
     '48 01 00 00 00 00 00 49',
     '48 01 01 00 00 00 00 4A',
     '48 01 02 00 00 00 00 4B',
-    '8F 0A 03 05 40 04 46 2B',
 ]);
 
 function toHexKey(bytes) {

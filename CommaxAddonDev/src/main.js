@@ -2,7 +2,7 @@ const MqttClient = require('./mqttClient');
 const Ew11Client = require('./ew11Client');
 const CommandHandler = require('./commandHandler');
 const { version: ADDON_VERSION } = require('../package.json');
-const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame, isKnownStablePrimaryFrame } = require('./knownPackets');
+const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame } = require('./knownPackets');
 const { createPacketCapture } = require('./packetCapture');
 const { METERING_PACKET_LENGTHS, PRIMARY_PACKET_LENGTHS } = require('./packetFramer');
 const { log, logError } = require('./utils');
@@ -444,31 +444,18 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 const handledOutdoorPm10 = !handledCurrentWeather
                     && analyzeAndDiscoverLifeInfoOutdoorPm10(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
                 const handled = handledCurrentWeather || handledOutdoorPm10;
-                packetCapture.record({
-                    source: '메인 EW11',
-                    kind: handledCurrentWeather
-                        ? 'life_info_current_weather_frame'
-                        : handledOutdoorPm10
-                            ? 'life_info_outdoor_pm10_frame'
-                            : 'unhandled_frame',
-                    bytes,
-                    note: handledCurrentWeather
-                        ? 'Confirmed life information current outdoor weather frame.'
-                        : handledOutdoorPm10
-                            ? 'Confirmed life information outdoor PM10 frame.'
-                        : 'Framed packet with a known length, but no parser handled it.',
-                });
+                if (!handled) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'unhandled_frame',
+                        bytes,
+                        note: 'Framed packet with a known length, but no parser handled it.',
+                    });
+                }
                 break;
             }
             case 0x25:
-                if (analyzeAndDiscoverLifeInfoForecast(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
-                    packetCapture.record({
-                        source: '메인 EW11',
-                        kind: 'life_info_forecast_frame',
-                        bytes,
-                        note: 'Confirmed life information forecast weather frame.',
-                    });
-                } else {
+                if (!analyzeAndDiscoverLifeInfoForecast(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
                     packetCapture.record({
                         source: '메인 EW11',
                         kind: 'unhandled_frame',
@@ -479,20 +466,14 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 break;
             case 0x8F:
                 if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
-                    if (!isKnownStablePrimaryFrame(bytes)) {
-                        packetCapture.record({
-                            source: '메인 EW11',
-                            kind: 'life_info_frame',
-                            bytes,
-                            note: 'Life information frame recorded for weather, temperature, and dust mapping.',
-                        });
-                    }
+                    // 0x8F is treated as a checksum-valid unknown heartbeat candidate.
+                    // Confirmed weather, temperature, and dust data is handled by 0x24/0x25 frames.
                 } else {
                     packetCapture.record({
                         source: '메인 EW11',
-                        kind: 'invalid_life_info_frame',
+                        kind: 'invalid_unknown_8f_frame',
                         bytes,
-                        note: 'Life information frame failed checksum validation.',
+                        note: 'Unknown 0x8F heartbeat candidate failed checksum validation.',
                     });
                 }
                 break;

@@ -1,6 +1,6 @@
 name: "LG PI485 Air Conditioner"
 description: "LG PI485 에어컨 애드온 TCP Socket Ver"
-version: "0.1.0"
+version: "0.1.1"
 slug: "lg_pi485_aircon"
 url: "https://github.com/xepiloss/home-assistant"
 init: false

@@ -26,6 +26,9 @@ const {
     createDiagnostics,
 } = require('../src/diagnostics');
 const {
+    analyzeAndDiscoverClimate,
+} = require('../src/deviceParser');
+const {
     normalizeConfig,
 } = require('../src/config');
 const Ew11Client = require('../src/ew11Client');
@@ -358,7 +361,7 @@ test('frames split LGAP responses by header and checksum', () => {
     });
 });
 
-test('does not persist per-process discovery publish markers', () => {
+test('persists only discovery state', () => {
     const state = normalizeState({
         discoveredClimateUnits: ['lg_aircon_01'],
         climateStates: { '01': { hvacMode: 'cool' } },
@@ -368,9 +371,41 @@ test('does not persist per-process discovery publish markers', () => {
 
     assert.deepEqual(serializeState(state), {
         discoveredClimateUnits: ['lg_aircon_01'],
-        climateStates: { '01': { hvacMode: 'cool' } },
     });
+    assert.deepEqual(state.climateStates, {});
     assert.deepEqual([...normalizeState(serializeState(state)).discoveryPublishedThisRun], []);
+});
+
+test('does not save state for every status packet after discovery is published this run', async () => {
+    const state = normalizeState({
+        discoveredClimateUnits: ['lg_aircon_03'],
+    });
+    state.discoveryPublishedThisRun.add('lg_aircon_03');
+    let saveCount = 0;
+    const mqttClient = {
+        publish: (_topic, _message, _options, callback) => callback?.(),
+    };
+    const topics = {
+        path: (...parts) => parts.join('/'),
+        discovery: (...parts) => parts.join('/'),
+        availability: (...parts) => parts.join('/'),
+    };
+    const packet = [
+        0x10, 0x83, 0xA3, 0x30,
+        0x03, 0x00, 0x30, 0x4C,
+        0x6F, 0x70, 0x71, 0x28,
+        0x00, 0x05, 0x23, 0xD0,
+    ];
+
+    const handled = await analyzeAndDiscoverClimate(packet, state, mqttClient, {
+        saveState: async () => { saveCount += 1; },
+        topics,
+        supportedHvacModes: ['off', 'cool', 'fan_only', 'dry', 'auto'],
+    });
+
+    assert.equal(handled, true);
+    assert.equal(saveCount, 0);
+    assert.equal(state.climateStates['03'].targetTemperature, 27);
 });
 
 test('summarizes target temperature raw byte changes for monitoring', () => {

@@ -223,9 +223,12 @@ async function ensureClimateDiscovered(deviceId, state, mqttClient, { saveState,
         { retain: true }
     )));
 
+    const isNewDiscovery = !state.discoveredClimateUnits.has(uniqueId);
     state.discoveredClimateUnits.add(uniqueId);
     state.discoveryPublishedThisRun.add(uniqueId);
-    await saveState();
+    if (isNewDiscovery) {
+        await saveState();
+    }
     await publishAsync(mqttClient, topics.availability('climate', deviceId), 'available', { retain: true, qos: 1 });
 }
 
@@ -279,7 +282,6 @@ async function analyzeAndDiscoverClimate(bytes, state, mqttClient, { saveState, 
     }
 
     await Promise.all(publishes);
-    await saveState();
     return true;
 }
 

@@ -20,14 +20,13 @@ function normalizeState(raw = {}) {
     return {
         discoveredClimateUnits: new Set(raw.discoveredClimateUnits || []),
         discoveryPublishedThisRun: new Set(),
-        climateStates: raw.climateStates || {},
+        climateStates: {},
     };
 }
 
 function serializeState(state) {
     return {
         discoveredClimateUnits: Array.from(state.discoveredClimateUnits),
-        climateStates: state.climateStates || {},
     };
 }
 

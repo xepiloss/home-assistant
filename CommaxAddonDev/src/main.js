@@ -576,9 +576,13 @@ async function main() {
         filePath: config.packetCapture.path,
     });
 
+    let primaryClient;
     const commandHandler = new CommandHandler({
         topicPrefix: config.mqtt.topicPrefix,
         elevator: config.elevator,
+        onCommandSent: (command, sentAt) => {
+            primaryClient?.recordOutboundCommand(command, sentAt);
+        },
     });
 
     let mqttClient;
@@ -624,7 +628,6 @@ async function main() {
     });
     reportAsyncError('진단 discovery 발행', diagnostics.publishDiscovery());
 
-    let primaryClient;
     const packetMonitor = createPacketIntervalMonitor(commandHandler, () => primaryClient?.socket);
 
     primaryClient = new Ew11Client({

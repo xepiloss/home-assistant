@@ -142,6 +142,62 @@ test('createPacketCapture keeps only recent receive samples for repeated packets
     ]);
 });
 
+test('createPacketCapture keeps only recent context samples for repeated packets', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'commax-packet-capture-context-'));
+    const capturePath = path.join(tempDir, 'unknown.jsonl');
+    const timestamps = [
+        '2026-04-25T00:00:00.000Z',
+        '2026-04-25T00:01:00.000Z',
+        '2026-04-25T00:02:00.000Z',
+        '2026-04-25T00:03:00.000Z',
+        '2026-04-25T00:04:00.000Z',
+        '2026-04-25T00:05:00.000Z',
+        '2026-04-25T00:06:00.000Z',
+    ];
+    const capture = createPacketCapture({
+        enabled: true,
+        filePath: capturePath,
+        now: () => new Date(timestamps.shift()),
+    });
+
+    for (let index = 0; index < 7; index += 1) {
+        capture.record({
+            source: '메인 EW11',
+            kind: 'dropped_bytes',
+            bytes: [0xAA],
+            note: 'repeat packet',
+            context: {
+                traffic_origin: index % 2 === 0 ? 'stock_bus' : 'addon_command_window',
+                chunk_hex: `AA 00 0${index}`,
+                dropped_index: index + 1,
+            },
+        });
+    }
+    await capture.flush();
+
+    const [line] = (await fs.readFile(capturePath, 'utf8')).trim().split('\n');
+    const record = JSON.parse(line);
+
+    assert.equal(record.count, 7);
+    assert.equal(record.recent_contexts.length, 5);
+    assert.deepEqual(
+        record.recent_contexts.map((context) => context.seen_at),
+        [
+            '2026-04-25T00:02:00.000Z',
+            '2026-04-25T00:03:00.000Z',
+            '2026-04-25T00:04:00.000Z',
+            '2026-04-25T00:05:00.000Z',
+            '2026-04-25T00:06:00.000Z',
+        ]
+    );
+    assert.deepEqual(
+        record.recent_contexts.map((context) => context.chunk_hex),
+        ['AA 00 02', 'AA 00 03', 'AA 00 04', 'AA 00 05', 'AA 00 06']
+    );
+    assert.equal(record.recent_contexts[1].traffic_origin, 'addon_command_window');
+    assert.equal(record.recent_contexts[4].traffic_origin, 'stock_bus');
+});
+
 test('createPacketCapture compacts legacy seen_at records when updating', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'commax-packet-capture-legacy-'));
     const capturePath = path.join(tempDir, 'unknown.jsonl');

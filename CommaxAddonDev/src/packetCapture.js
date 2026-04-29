@@ -5,6 +5,7 @@ const { log, logError } = require('./utils');
 
 const DEFAULT_WRITE_DELAY_MS = 1000;
 const MAX_RECENT_SEEN_AT = 5;
+const MAX_RECENT_CONTEXTS = 5;
 
 function createPacketKey(record) {
     return [record.source, record.kind, record.hex].join('\t');
@@ -64,6 +65,23 @@ function mergeRecentTimestamps(existingTimestamps, incomingTimestamps) {
     return trimRecentTimestamps([
         ...(Array.isArray(existingTimestamps) ? existingTimestamps : []),
         ...(Array.isArray(incomingTimestamps) ? incomingTimestamps : []),
+    ]);
+}
+
+function trimRecentContexts(contexts) {
+    if (!Array.isArray(contexts)) {
+        return [];
+    }
+
+    return contexts
+        .filter((context) => context && typeof context === 'object' && !Array.isArray(context))
+        .slice(-MAX_RECENT_CONTEXTS);
+}
+
+function mergeRecentContexts(existingContexts, incomingContexts) {
+    return trimRecentContexts([
+        ...(Array.isArray(existingContexts) ? existingContexts : []),
+        ...(Array.isArray(incomingContexts) ? incomingContexts : []),
     ]);
 }
 
@@ -216,6 +234,12 @@ function createPacketCapture({
         mergeRepeatSummary(existing, incoming);
         addRepeatInterval(existing, calculateIntervalMs(previousLastSeen, incoming.first_seen));
         existing.recent_seen_at = mergeRecentTimestamps(existing.recent_seen_at, incoming.recent_seen_at);
+        const recentContexts = mergeRecentContexts(existing.recent_contexts, incoming.recent_contexts);
+        if (recentContexts.length > 0) {
+            existing.recent_contexts = recentContexts;
+        } else {
+            delete existing.recent_contexts;
+        }
         markDirty();
     }
 
@@ -227,7 +251,7 @@ function createPacketCapture({
         const seenAt = normalizeSeenTimestamps(record, lastSeen);
         const repeatSummary = normalizeRepeatSummary(record, seenAt, hasFullSeenAt);
 
-        return {
+        const normalized = {
             source: record.source,
             kind: record.kind,
             note: record.note,
@@ -240,6 +264,13 @@ function createPacketCapture({
             recent_seen_at: trimRecentTimestamps(seenAt),
             ...repeatSummary,
         };
+
+        const recentContexts = trimRecentContexts(record.recent_contexts);
+        if (recentContexts.length > 0) {
+            normalized.recent_contexts = recentContexts;
+        }
+
+        return normalized;
     }
 
     async function loadExistingRecords() {
@@ -327,10 +358,20 @@ function createPacketCapture({
         }, writeDelayMs);
     }
 
-    function createRecord({ source, kind, bytes, note }, timestamp) {
-        const normalizedBytes = [...bytes];
+    function createContextEntry(context, timestamp) {
+        if (!context || typeof context !== 'object' || Array.isArray(context)) {
+            return null;
+        }
 
         return {
+            seen_at: timestamp,
+            ...context,
+        };
+    }
+
+    function createRecord({ source, kind, bytes, note, context }, timestamp) {
+        const normalizedBytes = [...bytes];
+        const record = {
             source,
             kind,
             note,
@@ -343,9 +384,16 @@ function createPacketCapture({
             recent_seen_at: [timestamp],
             repeat_interval_count: 0,
         };
+
+        const contextEntry = createContextEntry(context, timestamp);
+        if (contextEntry) {
+            record.recent_contexts = [contextEntry];
+        }
+
+        return record;
     }
 
-    function record({ source, kind, bytes, note }) {
+    function record({ source, kind, bytes, note, context }) {
         if (!enabled || !bytes || bytes.length === 0) {
             return;
         }
@@ -356,7 +404,7 @@ function createPacketCapture({
         }
 
         const timestamp = now().toISOString();
-        const entry = createRecord({ source, kind, bytes, note }, timestamp);
+        const entry = createRecord({ source, kind, bytes, note, context }, timestamp);
 
         operationQueue = operationQueue
             .catch(() => undefined)

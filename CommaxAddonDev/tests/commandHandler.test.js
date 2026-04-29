@@ -32,6 +32,17 @@ function clearPendingTimers(handler) {
     }
 }
 
+function withMockedNow(timestamp, callback) {
+    const originalNow = Date.now;
+    Date.now = () => timestamp;
+
+    try {
+        return callback();
+    } finally {
+        Date.now = originalNow;
+    }
+}
+
 function bytesFromHex(hex) {
     return hex.split(/\s+/).map((byte) => Number.parseInt(byte, 16));
 }
@@ -399,22 +410,31 @@ test('handleAckOrState matches light ACK to the command state', () => {
 });
 
 test('safeWrite records sentAt for ACK latency logging', () => {
-    const handler = new CommandHandler({ topicPrefix: 'devcommax' });
-    const command = handler.createLightPacket('01', 0x01, 0);
-    const socket = {
-        destroyed: false,
-        writable: true,
-        writableNeedDrain: false,
-        write() {},
-    };
+    withMockedNow(123456, () => {
+        const sentCommands = [];
+        const handler = new CommandHandler({
+            topicPrefix: 'devcommax',
+            onCommandSent: (command, sentAt) => sentCommands.push({ command, sentAt }),
+        });
+        const command = handler.createLightPacket('01', 0x01, 0);
+        const socket = {
+            destroyed: false,
+            writable: true,
+            writableNeedDrain: false,
+            write() {},
+        };
 
-    handler.sendCommand(command);
-    handler.dequeueAndWrite(socket);
+        handler.sendCommand(command);
+        handler.dequeueAndWrite(socket);
 
-    const [entry] = handler.commandMetadata.values();
-    assert.equal(typeof entry.sentAt, 'number');
+        const [entry] = handler.commandMetadata.values();
+        assert.equal(entry.sentAt, 123456);
+        assert.equal(sentCommands.length, 1);
+        assert.equal(sentCommands[0].command.toString('hex'), command.toString('hex'));
+        assert.equal(sentCommands[0].sentAt, 123456);
 
-    clearPendingTimers(handler);
+        clearPendingTimers(handler);
+    });
 });
 
 test('handleAckOrState keeps pending temperature command when target differs', () => {

@@ -3,6 +3,7 @@ const { log, logError } = require('./utils');
 const { PacketFramer, formatBytes } = require('./packetFramer');
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const DEFAULT_OUTBOUND_CONTEXT_WINDOW_MS = 1000;
 
 function shouldLogUnknownPackets(env = process.env) {
     return TRUE_VALUES.has(String(env.COMMAX_LOG_UNKNOWN_PACKETS || '').toLowerCase());
@@ -51,6 +52,8 @@ class Ew11Client {
         this.reconnectTimer = null;
         this.isAvailable = false;
         this.socket = null;
+        this.lastOutboundCommand = null;
+        this.outboundContextWindowMs = DEFAULT_OUTBOUND_CONTEXT_WINDOW_MS;
         this.connect();
     }
 
@@ -98,13 +101,25 @@ class Ew11Client {
     handleIncomingData(data) {
         this.lastDataTime = Date.now();
         this.onReceive(new Date(this.lastDataTime));
+        const chunk = Buffer.from(data);
 
         if (!this.usePacketFramer) {
-            this.onDataCallback([...Buffer.from(data)]);
+            this.onDataCallback([...chunk]);
             return;
         }
 
-        const { frames, dropped, recovered = [] } = this.packetFramer.push(data);
+        const { frames, dropped, recovered = [] } = this.packetFramer.push(chunk);
+        const pendingBuffer = this.packetFramer?.buffer || Buffer.alloc(0);
+        const trafficContext = this.getTrafficOriginContext(this.lastDataTime);
+        const captureContext = {
+            ...trafficContext,
+            chunk_hex: formatBytes(chunk),
+            chunk_length: chunk.length,
+            emitted_frames_hex: frames.map((bytes) => formatBytes(bytes)),
+            recovered_frames_hex: recovered.map((bytes) => formatBytes(bytes)),
+            pending_buffer_hex: pendingBuffer.length > 0 ? formatBytes(pendingBuffer) : '',
+            pending_buffer_length: pendingBuffer.length,
+        };
 
         if (this.logUnknownPackets) {
             for (const bytes of dropped) {
@@ -112,14 +127,20 @@ class Ew11Client {
             }
         }
 
-        for (const bytes of dropped) {
+        dropped.forEach((bytes, index) => {
             this.onUnknownPacket({
                 source: this.name,
                 kind: 'dropped_bytes',
                 bytes,
                 note: 'Packet framer dropped bytes while resyncing to a known header.',
+                context: {
+                    ...captureContext,
+                    dropped_index: index + 1,
+                    dropped_count: dropped.length,
+                    dropped_bytes_hex: dropped.map((item) => formatBytes(item)),
+                },
             });
-        }
+        });
 
         for (const bytes of recovered) {
             log(`${this.name} 패킷 복원 성공 : ${formatBytes(bytes)}`);
@@ -128,12 +149,50 @@ class Ew11Client {
                 kind: 'recovered_state_frame',
                 bytes,
                 note: 'Packet framer recovered a checksum-valid state frame from a misaligned byte stream.',
+                context: captureContext,
             });
         }
 
         for (const bytes of frames) {
             this.onDataCallback(bytes);
         }
+    }
+
+    recordOutboundCommand(command, sentAt = Date.now()) {
+        const bytes = Buffer.from(command || []);
+        if (bytes.length === 0) {
+            return;
+        }
+
+        this.lastOutboundCommand = {
+            hex: formatBytes(bytes),
+            length: bytes.length,
+            sentAt,
+        };
+    }
+
+    getTrafficOriginContext(receivedAt = Date.now()) {
+        if (!this.lastOutboundCommand) {
+            return {
+                traffic_origin: 'stock_bus',
+                traffic_origin_detail: 'no_recent_addon_command',
+            };
+        }
+
+        const elapsedMs = receivedAt - this.lastOutboundCommand.sentAt;
+        const isRecentOutbound = elapsedMs >= 0 && elapsedMs <= this.outboundContextWindowMs;
+
+        return {
+            traffic_origin: isRecentOutbound ? 'addon_command_window' : 'stock_bus',
+            traffic_origin_detail: isRecentOutbound
+                ? 'received_within_recent_addon_command_window'
+                : 'last_addon_command_outside_context_window',
+            last_outbound_command_hex: this.lastOutboundCommand.hex,
+            last_outbound_command_length: this.lastOutboundCommand.length,
+            last_outbound_sent_at: new Date(this.lastOutboundCommand.sentAt).toISOString(),
+            last_outbound_elapsed_ms: elapsedMs,
+            outbound_context_window_ms: this.outboundContextWindowMs,
+        };
     }
 
     clearConnectionTimer() {

@@ -108,15 +108,29 @@ class Ew11Client {
             return;
         }
 
-        const { frames, dropped, recovered = [] } = this.packetFramer.push(chunk);
+        const preBuffer = Buffer.from(this.packetFramer?.buffer || Buffer.alloc(0));
+        const combinedBuffer = preBuffer.length > 0 ? Buffer.concat([preBuffer, chunk]) : chunk;
+        const {
+            frames,
+            dropped,
+            recovered = [],
+            droppedDetails = [],
+            recoveredDetails = [],
+            corrupted = [],
+        } = this.packetFramer.push(chunk);
         const pendingBuffer = this.packetFramer?.buffer || Buffer.alloc(0);
         const trafficContext = this.getTrafficOriginContext(this.lastDataTime);
         const captureContext = {
             ...trafficContext,
+            pre_buffer_hex: preBuffer.length > 0 ? formatBytes(preBuffer) : '',
+            pre_buffer_length: preBuffer.length,
             chunk_hex: formatBytes(chunk),
             chunk_length: chunk.length,
+            combined_buffer_hex: formatBytes(combinedBuffer),
+            combined_buffer_length: combinedBuffer.length,
             emitted_frames_hex: frames.map((bytes) => formatBytes(bytes)),
             recovered_frames_hex: recovered.map((bytes) => formatBytes(bytes)),
+            corrupted_frame_candidates_hex: corrupted.map((candidate) => formatBytes(candidate.bytes)),
             pending_buffer_hex: pendingBuffer.length > 0 ? formatBytes(pendingBuffer) : '',
             pending_buffer_length: pendingBuffer.length,
         };
@@ -128,6 +142,7 @@ class Ew11Client {
         }
 
         dropped.forEach((bytes, index) => {
+            const droppedDetail = droppedDetails[index] || {};
             this.onUnknownPacket({
                 source: this.name,
                 kind: 'dropped_bytes',
@@ -138,20 +153,50 @@ class Ew11Client {
                     dropped_index: index + 1,
                     dropped_count: dropped.length,
                     dropped_bytes_hex: dropped.map((item) => formatBytes(item)),
+                    dropped_reason: droppedDetail.reason || '',
+                    dropped_next_header_hex: droppedDetail.next_header_hex || '',
+                    dropped_recovered_frame_hex: droppedDetail.recovered_frame_hex || '',
+                    dropped_recovery_status: droppedDetail.recovery_status || '',
                 },
             });
         });
 
-        for (const bytes of recovered) {
+        corrupted.forEach((candidate) => {
+            this.onUnknownPacket({
+                source: this.name,
+                kind: 'corrupted_frame_candidate',
+                bytes: candidate.bytes,
+                note: 'Packet framer saw a checksum-mismatched known-header frame while resyncing.',
+                context: {
+                    ...captureContext,
+                    corrupted_reason: candidate.reason || '',
+                    corrupted_recovered_frame_hex: candidate.recovered_frame_hex || '',
+                    corrupted_recovery_status: candidate.recovery_status || '',
+                    corrupted_recovered_offset: candidate.recovered_offset,
+                },
+            });
+        });
+
+        recovered.forEach((bytes, index) => {
+            const recoveryDetail = recoveredDetails[index] || {};
+            const kind = recoveryDetail.is_state_frame ? 'recovered_state_frame' : 'recovered_known_frame';
             log(`${this.name} 패킷 복원 성공 : ${formatBytes(bytes)}`);
             this.onUnknownPacket({
                 source: this.name,
-                kind: 'recovered_state_frame',
+                kind,
                 bytes,
-                note: 'Packet framer recovered a checksum-valid state frame from a misaligned byte stream.',
-                context: captureContext,
+                note: recoveryDetail.is_state_frame
+                    ? 'Packet framer recovered a checksum-valid state frame from a misaligned byte stream.'
+                    : 'Packet framer recovered a checksum-valid known frame from a misaligned byte stream.',
+                context: {
+                    ...captureContext,
+                    recovered_reason: recoveryDetail.reason || '',
+                    recovered_offset: recoveryDetail.offset,
+                    recovered_header_hex: recoveryDetail.header || '',
+                    recovered_is_state_frame: Boolean(recoveryDetail.is_state_frame),
+                },
             });
-        }
+        });
 
         for (const bytes of frames) {
             this.onDataCallback(bytes);

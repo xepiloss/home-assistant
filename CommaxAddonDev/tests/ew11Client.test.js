@@ -90,6 +90,13 @@ test('handleIncomingData reports recovered state frames to unknown packet captur
                     frames: [[0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6]],
                     dropped: [[0x04, 0x00, 0x00, 0x00, 0x05, 0xBA]],
                     recovered: [[0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6]],
+                    recoveredDetails: [{
+                        bytes: [0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6],
+                        reason: 'checksum_valid_frame_after_resync',
+                        offset: 6,
+                        header: 'B1',
+                        is_state_frame: true,
+                    }],
                 };
             },
         },
@@ -111,6 +118,66 @@ test('handleIncomingData reports recovered state frames to unknown packet captur
     assert.deepEqual(captured[1].context.emitted_frames_hex, ['B1 01 04 00 00 00 00 B6']);
     assert.deepEqual(captured[1].context.recovered_frames_hex, ['B1 01 04 00 00 00 00 B6']);
     assert.deepEqual(frames, [[0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6]]);
+});
+
+test('handleIncomingData reports corrupted and recovered known frame context', () => {
+    const captured = [];
+    const frames = [];
+    const client = {
+        usePacketFramer: true,
+        packetFramer: {
+            buffer: Buffer.from([0x02, 0x20, 0x00, 0x00, 0x00, 0x1C]),
+            push() {
+                this.buffer = Buffer.alloc(0);
+                return {
+                    frames: [[0x20, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x22]],
+                    dropped: [[0x02, 0x20, 0x00, 0x00, 0x00, 0x1C]],
+                    droppedDetails: [{
+                        bytes: [0x02, 0x20, 0x00, 0x00, 0x00, 0x1C],
+                        reason: 'checksum_mismatch_before_recovered_frame',
+                        recovered_frame_hex: '20 01 01 00 00 00 00 22',
+                        recovery_status: 'recovered',
+                    }],
+                    corrupted: [{
+                        bytes: [0x02, 0x20, 0x00, 0x00, 0x00, 0x1C, 0x20, 0x01],
+                        reason: 'checksum_mismatch_before_resync',
+                        recovered_frame_hex: '20 01 01 00 00 00 00 22',
+                        recovery_status: 'recovered',
+                        recovered_offset: 6,
+                    }],
+                    recovered: [[0x20, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x22]],
+                    recoveredDetails: [{
+                        bytes: [0x20, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x22],
+                        reason: 'checksum_valid_frame_after_resync',
+                        offset: 6,
+                        header: '20',
+                        is_state_frame: false,
+                    }],
+                };
+            },
+        },
+        logUnknownPackets: false,
+        name: '메인 EW11',
+        onReceive: () => undefined,
+        onDataCallback: (bytes) => frames.push(bytes),
+        onUnknownPacket: (packet) => captured.push(packet),
+        getTrafficOriginContext: Ew11Client.prototype.getTrafficOriginContext,
+        lastOutboundCommand: null,
+    };
+
+    Ew11Client.prototype.handleIncomingData.call(client, Buffer.from([0x20, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x22]));
+
+    assert.equal(captured.length, 3);
+    assert.equal(captured[0].kind, 'dropped_bytes');
+    assert.equal(captured[0].context.pre_buffer_hex, '02 20 00 00 00 1C');
+    assert.equal(captured[0].context.combined_buffer_hex, '02 20 00 00 00 1C 20 01 01 00 00 00 00 22');
+    assert.equal(captured[0].context.dropped_reason, 'checksum_mismatch_before_recovered_frame');
+    assert.equal(captured[1].kind, 'corrupted_frame_candidate');
+    assert.deepEqual(captured[1].bytes, [0x02, 0x20, 0x00, 0x00, 0x00, 0x1C, 0x20, 0x01]);
+    assert.equal(captured[1].context.corrupted_recovered_frame_hex, '20 01 01 00 00 00 00 22');
+    assert.equal(captured[2].kind, 'recovered_known_frame');
+    assert.equal(captured[2].context.recovered_is_state_frame, false);
+    assert.deepEqual(frames, [[0x20, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x22]]);
 });
 
 test('recordOutboundCommand stores command context for later packet capture', () => {

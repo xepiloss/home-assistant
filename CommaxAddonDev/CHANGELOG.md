@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.40-dev - 2026-04-30
+
+### Changed
+
+- 프레이머가 조각난 바이트를 버릴 때 사유, 다음 헤더, 복구 대상 프레임을 `droppedDetails`와 캡처 context에 함께 남기도록 보강했습니다.
+- checksum 불일치 known-header 프레임을 `corrupted_frame_candidate`로 수집해 깨진 후보 프레임도 분석에서 사라지지 않도록 했습니다.
+- 조각 속에서 checksum-valid 프레임을 복구하면 상태 프레임뿐 아니라 query/known 프레임도 `recovered_known_frame`으로 기록하도록 확장했습니다.
+- 수신 전 pending buffer와 현재 TCP chunk를 합친 전체 버퍼를 캡처 context에 남겨 조각난 프레임 재조립 근거를 더 정확히 확인할 수 있게 했습니다.
+
 ## 1.1.39-dev - 2026-04-29
 
 ### Changed

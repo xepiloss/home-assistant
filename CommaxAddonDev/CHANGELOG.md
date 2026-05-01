@@ -8,6 +8,7 @@
 - checksum 불일치 known-header 프레임을 `corrupted_frame_candidate`로 수집해 깨진 후보 프레임도 분석에서 사라지지 않도록 했습니다.
 - 조각 속에서 checksum-valid 프레임을 복구하면 상태 프레임뿐 아니라 query/known 프레임도 `recovered_known_frame`으로 기록하도록 확장했습니다.
 - 수신 전 pending buffer와 현재 TCP chunk를 합친 전체 버퍼를 캡처 context에 남겨 조각난 프레임 재조립 근거를 더 정확히 확인할 수 있게 했습니다.
+- 최근 조명 명령 직후 잘려 들어온 조명 ACK 꼬리를 직전 명령과 checksum으로 검증해 `B1` 상태 프레임으로 복원하도록 했습니다.
 
 ## 1.1.39-dev - 2026-04-29
 

@@ -5,6 +5,27 @@ const { PacketFramer, formatBytes } = require('./packetFramer');
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const DEFAULT_OUTBOUND_CONTEXT_WINDOW_MS = 1000;
 
+function calculateChecksum(bytes) {
+    return [...bytes].reduce((sum, byte) => sum + byte, 0) & 0xFF;
+}
+
+function hasValidChecksum(bytes) {
+    return bytes.length >= 8 && calculateChecksum(bytes.subarray(0, 7)) === bytes[7];
+}
+
+function parseHexBytes(hex) {
+    if (!hex) {
+        return [];
+    }
+
+    return String(hex)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((part) => Number.parseInt(part, 16))
+        .filter((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xFF);
+}
+
 function shouldLogUnknownPackets(env = process.env) {
     return TRUE_VALUES.has(String(env.COMMAX_LOG_UNKNOWN_PACKETS || '').toLowerCase());
 }
@@ -110,16 +131,41 @@ class Ew11Client {
 
         const preBuffer = Buffer.from(this.packetFramer?.buffer || Buffer.alloc(0));
         const combinedBuffer = preBuffer.length > 0 ? Buffer.concat([preBuffer, chunk]) : chunk;
-        const {
-            frames,
-            dropped,
-            recovered = [],
-            droppedDetails = [],
-            recoveredDetails = [],
-            corrupted = [],
-        } = this.packetFramer.push(chunk);
-        const pendingBuffer = this.packetFramer?.buffer || Buffer.alloc(0);
         const trafficContext = this.getTrafficOriginContext(this.lastDataTime);
+        const result = this.packetFramer.push(chunk);
+        const frames = [...(result.frames || [])];
+        const dropped = result.dropped || [];
+        const recovered = [...(result.recovered || [])];
+        const droppedDetails = result.droppedDetails || [];
+        const recoveredDetails = [...(result.recoveredDetails || [])];
+        const corrupted = result.corrupted || [];
+        let pendingBuffer = this.packetFramer?.buffer || Buffer.alloc(0);
+        const commandRecoveries = typeof this.recoverRecentLightAckTail === 'function'
+            ? this.recoverRecentLightAckTail({
+                dropped,
+                frames,
+                pendingBuffer,
+                trafficContext,
+            })
+            : [];
+
+        if (commandRecoveries.length > 0) {
+            const maxPendingBytesToConsume = Math.max(
+                0,
+                ...commandRecoveries.map((recovery) => recovery.consume_pending_bytes || 0)
+            );
+
+            for (const recovery of commandRecoveries) {
+                frames.push(recovery.bytes);
+                recovered.push(recovery.bytes);
+                recoveredDetails.push(recovery);
+            }
+
+            if (maxPendingBytesToConsume > 0 && this.packetFramer?.buffer) {
+                this.packetFramer.buffer = this.packetFramer.buffer.subarray(maxPendingBytesToConsume);
+                pendingBuffer = this.packetFramer.buffer;
+            }
+        }
         const captureContext = {
             ...trafficContext,
             pre_buffer_hex: preBuffer.length > 0 ? formatBytes(preBuffer) : '',
@@ -194,6 +240,9 @@ class Ew11Client {
                     recovered_offset: recoveryDetail.offset,
                     recovered_header_hex: recoveryDetail.header || '',
                     recovered_is_state_frame: Boolean(recoveryDetail.is_state_frame),
+                    recovered_source: recoveryDetail.source || '',
+                    recovered_tail_hex: recoveryDetail.tail_hex || '',
+                    recovered_from_command_hex: recoveryDetail.command_hex || '',
                 },
             });
         });
@@ -238,6 +287,133 @@ class Ew11Client {
             last_outbound_elapsed_ms: elapsedMs,
             outbound_context_window_ms: this.outboundContextWindowMs,
         };
+    }
+
+    recoverRecentLightAckTail({ dropped = [], frames = [], pendingBuffer = Buffer.alloc(0), trafficContext = {} }) {
+        if (trafficContext.traffic_origin !== 'addon_command_window') {
+            return [];
+        }
+
+        const commandBytes = Buffer.from(parseHexBytes(this.lastOutboundCommand?.hex));
+        if (
+            commandBytes.length !== 8
+            || commandBytes[0] !== 0x31
+            || ![0x00, 0x01].includes(commandBytes[2])
+            || !hasValidChecksum(commandBytes)
+        ) {
+            return [];
+        }
+
+        const expectedState = commandBytes[2];
+        const expectedDevice = commandBytes[1];
+        const existingFrameHexes = new Set(frames.map((frame) => formatBytes(frame)));
+        const recoveredFrameHexes = new Set();
+        const sources = [];
+
+        for (const bytes of dropped) {
+            const droppedBuffer = Buffer.from(bytes);
+            if (droppedBuffer.length > 0) {
+                sources.push({
+                    source: 'dropped_bytes',
+                    buffer: droppedBuffer,
+                    pending_length: 0,
+                });
+            }
+
+            if (droppedBuffer.length > 0 && pendingBuffer.length > 0) {
+                sources.push({
+                    source: 'dropped_bytes_with_pending_buffer',
+                    buffer: Buffer.concat([droppedBuffer, pendingBuffer]),
+                    pending_length: pendingBuffer.length,
+                });
+            }
+        }
+
+        if (pendingBuffer.length > 0) {
+            sources.push({
+                source: 'pending_buffer',
+                buffer: Buffer.from(pendingBuffer),
+                pending_length: pendingBuffer.length,
+            });
+        }
+
+        const recoveries = [];
+        const resolvePendingConsumption = ({ buffer, pending_length }, offset, length) => {
+            if (!pending_length || offset + length !== buffer.length) {
+                return 0;
+            }
+
+            const pendingStart = buffer.length - pending_length;
+            return offset <= pendingStart ? pending_length : 0;
+        };
+        const tryRecoverFrame = (frame, detail) => {
+            if (
+                frame[0] !== 0xB1
+                || frame[1] !== expectedState
+                || frame[2] !== expectedDevice
+                || !hasValidChecksum(frame)
+            ) {
+                return;
+            }
+
+            const frameHex = formatBytes(frame);
+            if (existingFrameHexes.has(frameHex) || recoveredFrameHexes.has(frameHex)) {
+                return;
+            }
+
+            recoveredFrameHexes.add(frameHex);
+            recoveries.push({
+                bytes: [...frame],
+                reason: detail.reason,
+                offset: detail.offset,
+                header: 'B1',
+                is_state_frame: true,
+                source: detail.source,
+                tail_hex: formatBytes(detail.tail),
+                command_hex: this.lastOutboundCommand.hex,
+                consume_pending_bytes: detail.consume_pending_bytes,
+            });
+        };
+
+        for (const item of sources) {
+            const { buffer, source } = item;
+
+            for (let offset = 0; offset <= buffer.length - 7; offset += 1) {
+                const tail = buffer.subarray(offset, offset + 7);
+                const consume_pending_bytes = resolvePendingConsumption(item, offset, tail.length);
+                tryRecoverFrame(Buffer.from([0xB1, ...tail]), {
+                    reason: 'recent_light_ack_tail_missing_header',
+                    offset,
+                    source,
+                    tail,
+                    consume_pending_bytes,
+                });
+
+                if (tail[0] !== expectedState) {
+                    tryRecoverFrame(Buffer.from([0xB1, expectedState, ...tail.subarray(1)]), {
+                        reason: 'recent_light_ack_tail_missing_header_corrupted_state',
+                        offset,
+                        source,
+                        tail,
+                        consume_pending_bytes,
+                    });
+                }
+            }
+
+            for (let offset = 0; offset <= buffer.length - 6; offset += 1) {
+                const tail = buffer.subarray(offset, offset + 6);
+                const consume_pending_bytes = resolvePendingConsumption(item, offset, tail.length);
+                tryRecoverFrame(Buffer.from([0xB1, expectedState, ...tail]), {
+                    reason: 'recent_light_ack_tail_missing_header_and_state',
+                    offset,
+                    source,
+                    tail,
+                    consume_pending_bytes,
+                });
+            }
+        }
+
+        return recoveries;
     }
 
     clearConnectionTimer() {

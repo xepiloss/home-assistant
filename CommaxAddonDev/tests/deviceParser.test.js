@@ -792,6 +792,7 @@ test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', as
         mqttClient,
         {
             monthlyMeteringState,
+            monthlyMeteringDate: new Date('2026-04-25T00:00:00+09:00'),
             saveState: async () => {
                 saveCount += 1;
             },

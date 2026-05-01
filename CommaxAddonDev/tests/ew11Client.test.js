@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const Ew11Client = require('../src/ew11Client');
+const { PacketFramer } = require('../src/packetFramer');
 const { shouldLogUnknownPackets } = Ew11Client;
 
 function withMockedNow(timestamp, callback) {
@@ -268,5 +269,126 @@ test('handleIncomingData marks stale outbound command context as stock bus traff
         assert.equal(captured[0].context.traffic_origin, 'stock_bus');
         assert.equal(captured[0].context.traffic_origin_detail, 'last_addon_command_outside_context_window');
         assert.equal(captured[0].context.last_outbound_elapsed_ms, 2000);
+    });
+});
+
+test('handleIncomingData recovers a recent light ACK tail split across dropped and pending bytes', () => {
+    withMockedNow(Date.parse('2026-04-30T18:51:17.323Z'), () => {
+        const captured = [];
+        const frames = [];
+        const client = {
+            usePacketFramer: true,
+            packetFramer: new PacketFramer(),
+            logUnknownPackets: false,
+            name: '메인 EW11',
+            onReceive: () => undefined,
+            onDataCallback: (bytes) => frames.push(bytes),
+            onUnknownPacket: (packet) => captured.push(packet),
+            getTrafficOriginContext: Ew11Client.prototype.getTrafficOriginContext,
+            recoverRecentLightAckTail: Ew11Client.prototype.recoverRecentLightAckTail,
+            lastOutboundCommand: {
+                hex: '31 04 01 00 00 00 00 36',
+                length: 8,
+                sentAt: Date.parse('2026-04-30T18:51:17.252Z'),
+            },
+            outboundContextWindowMs: 1000,
+        };
+
+        Ew11Client.prototype.handleIncomingData.call(
+            client,
+            Buffer.from([
+                0x82, 0x80, 0x04, 0x23, 0x05, 0x00, 0x00, 0x2E,
+                0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6,
+            ])
+        );
+
+        assert.deepEqual(frames, [
+            [0x82, 0x80, 0x04, 0x23, 0x05, 0x00, 0x00, 0x2E],
+            [0xB1, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0xB6],
+        ]);
+        assert.equal(client.packetFramer.buffer.length, 0);
+        assert.equal(captured[0].kind, 'dropped_bytes');
+        assert.equal(captured[1].kind, 'recovered_state_frame');
+        assert.equal(captured[1].context.recovered_reason, 'recent_light_ack_tail_missing_header');
+        assert.equal(captured[1].context.recovered_source, 'dropped_bytes_with_pending_buffer');
+        assert.equal(captured[1].context.recovered_tail_hex, '01 04 00 00 00 00 B6');
+        assert.equal(captured[1].context.recovered_from_command_hex, '31 04 01 00 00 00 00 36');
+    });
+});
+
+test('handleIncomingData recovers a recent light ACK tail with a corrupted state byte', () => {
+    withMockedNow(Date.parse('2026-04-29T22:48:51.421Z'), () => {
+        const captured = [];
+        const frames = [];
+        const client = {
+            usePacketFramer: true,
+            packetFramer: new PacketFramer(),
+            logUnknownPackets: false,
+            name: '메인 EW11',
+            onReceive: () => undefined,
+            onDataCallback: (bytes) => frames.push(bytes),
+            onUnknownPacket: (packet) => captured.push(packet),
+            getTrafficOriginContext: Ew11Client.prototype.getTrafficOriginContext,
+            recoverRecentLightAckTail: Ew11Client.prototype.recoverRecentLightAckTail,
+            lastOutboundCommand: {
+                hex: '31 07 01 00 00 00 00 39',
+                length: 8,
+                sentAt: Date.parse('2026-04-29T22:48:51.354Z'),
+            },
+            outboundContextWindowMs: 1000,
+        };
+
+        Ew11Client.prototype.handleIncomingData.call(
+            client,
+            Buffer.from([
+                0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B,
+                0x0B, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9,
+            ])
+        );
+
+        assert.deepEqual(frames, [
+            [0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B],
+            [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9],
+        ]);
+        assert.equal(captured[1].kind, 'recovered_state_frame');
+        assert.equal(captured[1].context.recovered_reason, 'recent_light_ack_tail_missing_header_corrupted_state');
+        assert.equal(captured[1].context.recovered_tail_hex, '0B 07 00 00 00 00 B9');
+    });
+});
+
+test('handleIncomingData does not recover light ACK tails outside the addon command window', () => {
+    withMockedNow(Date.parse('2026-04-29T22:48:53.421Z'), () => {
+        const captured = [];
+        const frames = [];
+        const client = {
+            usePacketFramer: true,
+            packetFramer: new PacketFramer(),
+            logUnknownPackets: false,
+            name: '메인 EW11',
+            onReceive: () => undefined,
+            onDataCallback: (bytes) => frames.push(bytes),
+            onUnknownPacket: (packet) => captured.push(packet),
+            getTrafficOriginContext: Ew11Client.prototype.getTrafficOriginContext,
+            recoverRecentLightAckTail: Ew11Client.prototype.recoverRecentLightAckTail,
+            lastOutboundCommand: {
+                hex: '31 07 01 00 00 00 00 39',
+                length: 8,
+                sentAt: Date.parse('2026-04-29T22:48:51.354Z'),
+            },
+            outboundContextWindowMs: 1000,
+        };
+
+        Ew11Client.prototype.handleIncomingData.call(
+            client,
+            Buffer.from([
+                0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B,
+                0x0B, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9,
+            ])
+        );
+
+        assert.deepEqual(frames, [[0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B]]);
+        assert.equal(captured.length, 1);
+        assert.equal(captured[0].kind, 'dropped_bytes');
+        assert.equal(captured[0].context.traffic_origin, 'stock_bus');
     });
 });

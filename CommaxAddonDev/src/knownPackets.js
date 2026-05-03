@@ -26,6 +26,7 @@ const KNOWN_STABLE_PRIMARY_FRAMES = new Set([
     '48 01 00 00 00 00 00 49',
     '48 01 01 00 00 00 00 4A',
     '48 01 02 00 00 00 00 4B',
+    'AA 00 00 00 00 00 00 AA',
 ]);
 
 function toHexKey(bytes) {

@@ -13,6 +13,14 @@ function hasValidChecksum(bytes) {
     return bytes.length >= 8 && calculateChecksum(bytes.subarray(0, 7)) === bytes[7];
 }
 
+function byteToHex(byte) {
+    return byte?.toString(16).padStart(2, '0').toUpperCase();
+}
+
+function decodeBcdNumber(bytes) {
+    return bytes.reduce((value, byte) => (value * 100) + (((byte >> 4) & 0x0F) * 10) + (byte & 0x0F), 0);
+}
+
 function parseHexBytes(hex) {
     if (!hex) {
         return [];
@@ -24,6 +32,12 @@ function parseHexBytes(hex) {
         .filter(Boolean)
         .map((part) => Number.parseInt(part, 16))
         .filter((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 0xFF);
+}
+
+function isKnownEmptyDroppedBytes(bytes, trafficContext = {}) {
+    return trafficContext.traffic_origin === 'stock_bus'
+        && bytes.length === 1
+        && bytes[0] === 0x29;
 }
 
 function shouldLogUnknownPackets(env = process.env) {
@@ -140,8 +154,8 @@ class Ew11Client {
         const recoveredDetails = [...(result.recoveredDetails || [])];
         const corrupted = result.corrupted || [];
         let pendingBuffer = this.packetFramer?.buffer || Buffer.alloc(0);
-        const commandRecoveries = typeof this.recoverRecentLightAckTail === 'function'
-            ? this.recoverRecentLightAckTail({
+        const commandRecoveries = typeof this.recoverRecentCommandAckTail === 'function'
+            ? this.recoverRecentCommandAckTail({
                 dropped,
                 frames,
                 pendingBuffer,
@@ -166,6 +180,15 @@ class Ew11Client {
                 pendingBuffer = this.packetFramer.buffer;
             }
         }
+        const droppedCommandRecoveryDetails = commandRecoveries
+            .filter((recovery) => String(recovery.source || '').startsWith('dropped_bytes'))
+            .map((recovery) => ({
+                frame_hex: formatBytes(recovery.bytes),
+                reason: recovery.reason || '',
+                source: recovery.source || '',
+                tail_hex: recovery.tail_hex || '',
+                command_hex: recovery.command_hex || '',
+            }));
         const captureContext = {
             ...trafficContext,
             pre_buffer_hex: preBuffer.length > 0 ? formatBytes(preBuffer) : '',
@@ -189,6 +212,15 @@ class Ew11Client {
 
         dropped.forEach((bytes, index) => {
             const droppedDetail = droppedDetails[index] || {};
+            const commandRecovered = droppedCommandRecoveryDetails.length > 0;
+            if (
+                isKnownEmptyDroppedBytes(bytes, trafficContext)
+                || droppedDetail.recovery_status === 'recovered'
+                || commandRecovered
+            ) {
+                return;
+            }
+
             this.onUnknownPacket({
                 source: this.name,
                 kind: 'dropped_bytes',
@@ -203,11 +235,21 @@ class Ew11Client {
                     dropped_next_header_hex: droppedDetail.next_header_hex || '',
                     dropped_recovered_frame_hex: droppedDetail.recovered_frame_hex || '',
                     dropped_recovery_status: droppedDetail.recovery_status || '',
+                    dropped_command_recovery_status: droppedCommandRecoveryDetails.length > 0 ? 'recovered' : '',
+                    dropped_command_recovered_frames_hex: droppedCommandRecoveryDetails.map((detail) => detail.frame_hex),
+                    dropped_command_recovery_reasons: droppedCommandRecoveryDetails.map((detail) => detail.reason),
+                    dropped_command_recovery_sources: droppedCommandRecoveryDetails.map((detail) => detail.source),
+                    dropped_command_recovery_tails_hex: droppedCommandRecoveryDetails.map((detail) => detail.tail_hex),
+                    dropped_command_recovery_from_command_hex: droppedCommandRecoveryDetails.map((detail) => detail.command_hex),
                 },
             });
         });
 
         corrupted.forEach((candidate) => {
+            if (candidate.recovery_status === 'recovered' || commandRecoveries.length > 0) {
+                return;
+            }
+
             this.onUnknownPacket({
                 source: this.name,
                 kind: 'corrupted_frame_candidate',
@@ -223,28 +265,8 @@ class Ew11Client {
             });
         });
 
-        recovered.forEach((bytes, index) => {
-            const recoveryDetail = recoveredDetails[index] || {};
-            const kind = recoveryDetail.is_state_frame ? 'recovered_state_frame' : 'recovered_known_frame';
+        recovered.forEach((bytes) => {
             log(`${this.name} 패킷 복원 성공 : ${formatBytes(bytes)}`);
-            this.onUnknownPacket({
-                source: this.name,
-                kind,
-                bytes,
-                note: recoveryDetail.is_state_frame
-                    ? 'Packet framer recovered a checksum-valid state frame from a misaligned byte stream.'
-                    : 'Packet framer recovered a checksum-valid known frame from a misaligned byte stream.',
-                context: {
-                    ...captureContext,
-                    recovered_reason: recoveryDetail.reason || '',
-                    recovered_offset: recoveryDetail.offset,
-                    recovered_header_hex: recoveryDetail.header || '',
-                    recovered_is_state_frame: Boolean(recoveryDetail.is_state_frame),
-                    recovered_source: recoveryDetail.source || '',
-                    recovered_tail_hex: recoveryDetail.tail_hex || '',
-                    recovered_from_command_hex: recoveryDetail.command_hex || '',
-                },
-            });
         });
 
         for (const bytes of frames) {
@@ -289,23 +311,143 @@ class Ew11Client {
         };
     }
 
-    recoverRecentLightAckTail({ dropped = [], frames = [], pendingBuffer = Buffer.alloc(0), trafficContext = {} }) {
+    getRecentCommandAckSpec(commandBytes) {
+        if (commandBytes.length !== 8 || !hasValidChecksum(commandBytes)) {
+            return null;
+        }
+
+        const commandHeader = commandBytes[0];
+        const deviceId = commandBytes[1];
+        const commandType = commandBytes[2];
+        const value = commandBytes[3];
+
+        const common = {
+            commandHeader,
+            deviceId,
+            candidateStateBytes: [],
+            match: () => false,
+        };
+
+        switch (commandHeader) {
+            case 0x31:
+                return {
+                    ...common,
+                    deviceType: 'light',
+                    candidateHeaders: [0xB1, 0xB0],
+                    candidateStateBytes: commandType === 0x03 ? [0x01, 0x03] : [commandType],
+                    match: (frame) => {
+                        if (frame[2] !== deviceId) {
+                            return false;
+                        }
+
+                        if (commandType === 0x03) {
+                            return frame[1] !== 0x00 && frame[5] === commandBytes[6];
+                        }
+
+                        return frame[1] === commandType;
+                    },
+                };
+            case 0x7A:
+                return {
+                    ...common,
+                    deviceType: 'outlet',
+                    candidateHeaders: [0xF9, 0xFA],
+                    candidateStateBytes: commandType === 0x01 ? [value] : [],
+                    match: (frame) => {
+                        if (frame[2] !== deviceId) {
+                            return false;
+                        }
+
+                        switch (commandType) {
+                            case 0x01:
+                                return (frame[1] & 0x01) === (value & 0x01);
+                            case 0x02:
+                                return (frame[1] & 0x10 ? 1 : 0) === (value ? 1 : 0);
+                            case 0x03:
+                                return decodeBcdNumber([frame[5], frame[6]]) === commandBytes[4];
+                            default:
+                                return true;
+                        }
+                    },
+                };
+            case 0x04:
+                return {
+                    ...common,
+                    deviceType: 'temp',
+                    candidateHeaders: [0x82, 0x84],
+                    candidateStateBytes: commandType === 0x04
+                        ? (value === 0x00 ? [0x80, 0x00] : [0x81, 0x83])
+                        : [],
+                    match: (frame) => {
+                        if (frame[2] !== deviceId) {
+                            return false;
+                        }
+
+                        if (commandType === 0x03) {
+                            return frame[4] === value;
+                        }
+
+                        if (commandType === 0x04) {
+                            return value === 0x00
+                                ? frame[1] === 0x80 || frame[1] === 0x00
+                                : frame[1] === 0x81 || frame[1] === 0x83;
+                        }
+
+                        return true;
+                    },
+                };
+            case 0x78:
+                return {
+                    ...common,
+                    deviceType: 'fan',
+                    candidateHeaders: [0xF8, 0xF6],
+                    candidateStateBytes: commandType === 0x01
+                        ? (value === 0x02 ? [0x01, 0x02] : [value])
+                        : [],
+                    match: (frame) => {
+                        if (frame[2] !== deviceId) {
+                            return false;
+                        }
+
+                        if (commandType === 0x02) {
+                            return frame[3] === value;
+                        }
+
+                        if (commandType === 0x01) {
+                            if (value === 0x02) {
+                                return frame[1] === 0x01 || frame[1] === 0x02;
+                            }
+
+                            return frame[1] === value;
+                        }
+
+                        return true;
+                    },
+                };
+            case 0x22:
+                return {
+                    ...common,
+                    deviceType: 'master_light',
+                    candidateHeaders: [0xA0, 0xA2],
+                    candidateStateBytes: [commandType],
+                    match: (frame) => frame[2] === deviceId && frame[1] === commandType,
+                };
+            default:
+                return null;
+        }
+    }
+
+    recoverRecentCommandAckTail({ dropped = [], frames = [], pendingBuffer = Buffer.alloc(0), trafficContext = {} }) {
         if (trafficContext.traffic_origin !== 'addon_command_window') {
             return [];
         }
 
         const commandBytes = Buffer.from(parseHexBytes(this.lastOutboundCommand?.hex));
-        if (
-            commandBytes.length !== 8
-            || commandBytes[0] !== 0x31
-            || ![0x00, 0x01].includes(commandBytes[2])
-            || !hasValidChecksum(commandBytes)
-        ) {
+        const spec = this.getRecentCommandAckSpec(commandBytes);
+        if (!spec) {
             return [];
         }
 
-        const expectedState = commandBytes[2];
-        const expectedDevice = commandBytes[1];
         const existingFrameHexes = new Set(frames.map((frame) => formatBytes(frame)));
         const recoveredFrameHexes = new Set();
         const sources = [];
@@ -348,10 +490,9 @@ class Ew11Client {
         };
         const tryRecoverFrame = (frame, detail) => {
             if (
-                frame[0] !== 0xB1
-                || frame[1] !== expectedState
-                || frame[2] !== expectedDevice
+                !spec.candidateHeaders.includes(frame[0])
                 || !hasValidChecksum(frame)
+                || !spec.match(frame)
             ) {
                 return;
             }
@@ -366,8 +507,9 @@ class Ew11Client {
                 bytes: [...frame],
                 reason: detail.reason,
                 offset: detail.offset,
-                header: 'B1',
+                header: byteToHex(frame[0]),
                 is_state_frame: true,
+                command_device_type: spec.deviceType,
                 source: detail.source,
                 tail_hex: formatBytes(detail.tail),
                 command_hex: this.lastOutboundCommand.hex,
@@ -381,39 +523,51 @@ class Ew11Client {
             for (let offset = 0; offset <= buffer.length - 7; offset += 1) {
                 const tail = buffer.subarray(offset, offset + 7);
                 const consume_pending_bytes = resolvePendingConsumption(item, offset, tail.length);
-                tryRecoverFrame(Buffer.from([0xB1, ...tail]), {
-                    reason: 'recent_light_ack_tail_missing_header',
-                    offset,
-                    source,
-                    tail,
-                    consume_pending_bytes,
-                });
-
-                if (tail[0] !== expectedState) {
-                    tryRecoverFrame(Buffer.from([0xB1, expectedState, ...tail.subarray(1)]), {
-                        reason: 'recent_light_ack_tail_missing_header_corrupted_state',
+                for (const header of spec.candidateHeaders) {
+                    tryRecoverFrame(Buffer.from([header, ...tail]), {
+                        reason: 'recent_command_ack_tail_missing_header',
                         offset,
                         source,
                         tail,
                         consume_pending_bytes,
                     });
+
+                    for (const stateByte of spec.candidateStateBytes) {
+                        if (tail[0] !== stateByte) {
+                            tryRecoverFrame(Buffer.from([header, stateByte, ...tail.subarray(1)]), {
+                                reason: 'recent_command_ack_tail_missing_header_corrupted_state',
+                                offset,
+                                source,
+                                tail,
+                                consume_pending_bytes,
+                            });
+                        }
+                    }
                 }
             }
 
             for (let offset = 0; offset <= buffer.length - 6; offset += 1) {
                 const tail = buffer.subarray(offset, offset + 6);
                 const consume_pending_bytes = resolvePendingConsumption(item, offset, tail.length);
-                tryRecoverFrame(Buffer.from([0xB1, expectedState, ...tail]), {
-                    reason: 'recent_light_ack_tail_missing_header_and_state',
-                    offset,
-                    source,
-                    tail,
-                    consume_pending_bytes,
-                });
+                for (const header of spec.candidateHeaders) {
+                    for (const stateByte of spec.candidateStateBytes) {
+                        tryRecoverFrame(Buffer.from([header, stateByte, ...tail]), {
+                            reason: 'recent_command_ack_tail_missing_header_and_state',
+                            offset,
+                            source,
+                            tail,
+                            consume_pending_bytes,
+                        });
+                    }
+                }
             }
         }
 
         return recoveries;
+    }
+
+    recoverRecentLightAckTail(args) {
+        return this.recoverRecentCommandAckTail(args);
     }
 
     clearConnectionTimer() {

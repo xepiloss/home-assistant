@@ -2,13 +2,14 @@ const MqttClient = require('./mqttClient');
 const Ew11Client = require('./ew11Client');
 const CommandHandler = require('./commandHandler');
 const { version: ADDON_VERSION } = require('../package.json');
-const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame, isKnownStablePrimaryFrame } = require('./knownPackets');
+const { isKnownIgnoredMeteringFrame, isKnownIgnoredPrimaryFrame } = require('./knownPackets');
 const { createPacketCapture } = require('./packetCapture');
 const { METERING_PACKET_LENGTHS, PRIMARY_PACKET_LENGTHS } = require('./packetFramer');
 const { log, logError } = require('./utils');
 const { loadConfig } = require('./config');
 const { createDiagnostics } = require('./diagnostics');
 const { createTopicBuilder } = require('./topics');
+const { createPacketIntervalMonitor } = require('./packetIntervalMonitor');
 const {
     analyzeAndDiscoverAirQuality,
     analyzeAndDiscoverElevator,
@@ -32,9 +33,6 @@ const {
 } = require('./deviceParser');
 const { loadState, saveState } = require('./stateManager');
 
-const INTERVAL_WINDOW_MS = 10 * 1000;
-const THRESHOLD_INTERVAL_MS = 100;
-const COMMAND_DRAIN_INTERVAL_MS = 50;
 const MONTHLY_USAGE_LABELS = Object.freeze({
     water_acc_meter: '수도',
     electric_acc_meter: '전기',
@@ -229,72 +227,6 @@ function createAvailabilityController(state, mqttClient, topics) {
     };
 }
 
-function createPacketIntervalMonitor(commandHandler, getSocket) {
-    let lastReceiveTime = null;
-    let windowStartTime = null;
-    let hasChecked = false;
-    let intervalTimer = null;
-    let intervals = [];
-
-    function flushQueue() {
-        const socket = getSocket();
-        if (socket) {
-            commandHandler.dequeueAndWrite(socket);
-        }
-    }
-
-    function recordPacket() {
-        const currentTime = Date.now();
-
-        if (!hasChecked && windowStartTime === null) {
-            windowStartTime = currentTime;
-            log('10초 동안 패킷 수신 간격을 수집합니다.');
-        }
-
-        if (!hasChecked && lastReceiveTime !== null) {
-            intervals.push(currentTime - lastReceiveTime);
-        }
-
-        lastReceiveTime = currentTime;
-
-        if (hasChecked || currentTime - windowStartTime < INTERVAL_WINDOW_MS) {
-            return;
-        }
-
-        if (intervals.length === 0) {
-            log('10초 동안 패킷이 수신되지 않았습니다. EW11 연결 상태를 확인하세요.');
-            hasChecked = true;
-            windowStartTime = null;
-            return;
-        }
-
-        const averageInterval = intervals.reduce((sum, value) => sum + value, 0) / intervals.length;
-        log(`10초 패킷 수신 간격 평균: ${averageInterval.toFixed(2)}ms`);
-
-        if (averageInterval >= THRESHOLD_INTERVAL_MS && !intervalTimer) {
-            log(`10초 패킷 수신 간격 평균이 ${THRESHOLD_INTERVAL_MS}ms 이상이라 ${COMMAND_DRAIN_INTERVAL_MS}ms 주기 큐 배출을 시작합니다.`);
-            intervalTimer = setInterval(flushQueue, COMMAND_DRAIN_INTERVAL_MS);
-        }
-
-        hasChecked = true;
-        windowStartTime = null;
-        intervals = [];
-    }
-
-    function stop() {
-        if (intervalTimer) {
-            clearInterval(intervalTimer);
-            intervalTimer = null;
-        }
-    }
-
-    return {
-        flushQueue,
-        recordPacket,
-        stop,
-    };
-}
-
 function formatMonthlyUsageValue(sourceId, value) {
     return `${MONTHLY_USAGE_LABELS[sourceId] || sourceId}=${value}`;
 }
@@ -444,31 +376,18 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 const handledOutdoorPm10 = !handledCurrentWeather
                     && analyzeAndDiscoverLifeInfoOutdoorPm10(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics });
                 const handled = handledCurrentWeather || handledOutdoorPm10;
-                packetCapture.record({
-                    source: '메인 EW11',
-                    kind: handledCurrentWeather
-                        ? 'life_info_current_weather_frame'
-                        : handledOutdoorPm10
-                            ? 'life_info_outdoor_pm10_frame'
-                            : 'unhandled_frame',
-                    bytes,
-                    note: handledCurrentWeather
-                        ? 'Confirmed life information current outdoor weather frame.'
-                        : handledOutdoorPm10
-                            ? 'Confirmed life information outdoor PM10 frame.'
-                        : 'Framed packet with a known length, but no parser handled it.',
-                });
+                if (!handled) {
+                    packetCapture.record({
+                        source: '메인 EW11',
+                        kind: 'unhandled_frame',
+                        bytes,
+                        note: 'Framed packet with a known length, but no parser handled it.',
+                    });
+                }
                 break;
             }
             case 0x25:
-                if (analyzeAndDiscoverLifeInfoForecast(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
-                    packetCapture.record({
-                        source: '메인 EW11',
-                        kind: 'life_info_forecast_frame',
-                        bytes,
-                        note: 'Confirmed life information forecast weather frame.',
-                    });
-                } else {
+                if (!analyzeAndDiscoverLifeInfoForecast(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
                     packetCapture.record({
                         source: '메인 EW11',
                         kind: 'unhandled_frame',
@@ -479,20 +398,14 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 break;
             case 0x8F:
                 if (analyzeAndDiscoverLifeInfo(bytes, state.lifeInfoState, mqttClient, { saveState: saveCurrentState, topics })) {
-                    if (!isKnownStablePrimaryFrame(bytes)) {
-                        packetCapture.record({
-                            source: '메인 EW11',
-                            kind: 'life_info_frame',
-                            bytes,
-                            note: 'Life information frame recorded for weather, temperature, and dust mapping.',
-                        });
-                    }
+                    // 0x8F is treated as a checksum-valid unknown heartbeat candidate.
+                    // Confirmed weather, temperature, and dust data is handled by 0x24/0x25 frames.
                 } else {
                     packetCapture.record({
                         source: '메인 EW11',
-                        kind: 'invalid_life_info_frame',
+                        kind: 'invalid_unknown_8f_frame',
                         bytes,
-                        note: 'Life information frame failed checksum validation.',
+                        note: 'Unknown 0x8F heartbeat candidate failed checksum validation.',
                     });
                 }
                 break;
@@ -595,9 +508,13 @@ async function main() {
         filePath: config.packetCapture.path,
     });
 
+    let primaryClient;
     const commandHandler = new CommandHandler({
         topicPrefix: config.mqtt.topicPrefix,
         elevator: config.elevator,
+        onCommandSent: (command, sentAt) => {
+            primaryClient?.recordOutboundCommand(command, sentAt);
+        },
     });
 
     let mqttClient;
@@ -643,7 +560,6 @@ async function main() {
     });
     reportAsyncError('진단 discovery 발행', diagnostics.publishDiscovery());
 
-    let primaryClient;
     const packetMonitor = createPacketIntervalMonitor(commandHandler, () => primaryClient?.socket);
 
     primaryClient = new Ew11Client({
@@ -728,7 +644,9 @@ async function main() {
     });
 }
 
-main().catch((err) => {
-    logError('Unhandled startup error:', err);
-    process.exit(1);
-});
+if (require.main === module) {
+    main().catch((err) => {
+        logError('Unhandled startup error:', err);
+        process.exit(1);
+    });
+}

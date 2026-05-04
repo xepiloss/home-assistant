@@ -178,7 +178,7 @@ function formatResponseTime(commandEntry, now = Date.now()) {
 }
 
 class CommandHandler {
-    constructor({ topicPrefix, env = process.env, logger = log, elevator = {} }) {
+    constructor({ topicPrefix, env = process.env, logger = log, elevator = {}, onCommandSent = () => undefined }) {
         this.topicPrefix = topicPrefix;
         this.priorityQueue = new PriorityQueue();
         this.lastMqttCommandAt = 0;
@@ -186,6 +186,7 @@ class CommandHandler {
         this.retryConfig = readRetryConfig(env);
         this.logger = logger;
         this.elevator = this.normalizeElevatorConfig(elevator);
+        this.onCommandSent = onCommandSent;
         this.commandMetadata = new Map();
         this.deferredCommands = new Map();
         this.nextCommandId = 1;
@@ -223,7 +224,13 @@ class CommandHandler {
         }
 
         socket.write(command);
-        this.markCommandSent(command, true);
+        const sentAt = Date.now();
+        try {
+            this.onCommandSent(command, sentAt);
+        } catch (err) {
+            logError('Command sent context callback failed:', err);
+        }
+        this.markCommandSent(command, true, sentAt);
         log(`-> ${formatCommandLog(command)}`);
     }
 
@@ -370,7 +377,7 @@ class CommandHandler {
         this.enqueueCommandEntry(commandEntry);
     }
 
-    markCommandSent(command, restartTimer = false) {
+    markCommandSent(command, restartTimer = false, sentAt = Date.now()) {
         const hexKey = command.toString('hex');
         let fallbackEntry = null;
 
@@ -384,7 +391,7 @@ class CommandHandler {
             }
 
             if (!commandEntry.sentAt) {
-                commandEntry.sentAt = Date.now();
+                commandEntry.sentAt = sentAt;
                 if (restartTimer) {
                     this.startRetryTimer(commandEntry);
                 }
@@ -393,7 +400,7 @@ class CommandHandler {
         }
 
         if (fallbackEntry) {
-            fallbackEntry.sentAt = Date.now();
+            fallbackEntry.sentAt = sentAt;
             if (restartTimer) {
                 this.startRetryTimer(fallbackEntry);
             }

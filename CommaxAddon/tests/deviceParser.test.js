@@ -98,6 +98,46 @@ test('analyzeAndDiscoverTemperature ignores extra heating frames before ACK hand
     assert.equal(discoveredTemps.size, 0);
 });
 
+test('clearInvalidTemperatureDiscoveries removes heating entities above configured count', () => {
+    const mqttClient = createMqttStub();
+    const discoveredTemps = new Set(['commax_temp_04', 'commax_temp_05']);
+    let saveCount = 0;
+
+    assert.equal(clearInvalidTemperatureDiscoveries(discoveredTemps, mqttClient, {
+        saveState: () => {
+            saveCount += 1;
+        },
+        topics: createTopicBuilder('devcommax'),
+        maxDevices: 4,
+    }), true);
+
+    assert(discoveredTemps.has('commax_temp_04'));
+    assert(!discoveredTemps.has('commax_temp_05'));
+    assert.equal(saveCount, 1);
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_05/config' && call.message === ''));
+    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/temp/05/availability' && call.message === 'unavailable'));
+});
+
+test('clearInvalidTemperatureDiscoveries clears retained heating discovery even when local state missed it', () => {
+    const mqttClient = createMqttStub();
+    const discoveredTemps = new Set(['commax_temp_01']);
+    let saveCount = 0;
+
+    assert.equal(clearInvalidTemperatureDiscoveries(discoveredTemps, mqttClient, {
+        saveState: () => {
+            saveCount += 1;
+        },
+        topics: createTopicBuilder('devcommax'),
+        maxDevices: 4,
+        cleanupLimit: 8,
+    }), true);
+
+    assert.equal(saveCount, 0);
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_05/config' && call.message === ''));
+    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_08/config' && call.message === ''));
+    assert(!mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_04/config' && call.message === ''));
+});
+
 test('parseMasterLightPacket ignores elevator packets sharing the same header', () => {
     const bytes = [0xA0, 0x01, 0x01, 0x00, 0x28, 0xD7, 0x00];
     bytes.push(calculateChecksum(bytes));
@@ -652,46 +692,6 @@ test('clearInvalidLightDiscoveries removes retained bogus light discovery', () =
     assert(mqttClient.calls.some((call) => call.topic === 'devcommax/light/67/availability' && call.message === 'unavailable'));
 });
 
-test('clearInvalidTemperatureDiscoveries removes heating entities above configured count', () => {
-    const mqttClient = createMqttStub();
-    const discoveredTemps = new Set(['commax_temp_04', 'commax_temp_05']);
-    let saveCount = 0;
-
-    assert.equal(clearInvalidTemperatureDiscoveries(discoveredTemps, mqttClient, {
-        saveState: () => {
-            saveCount += 1;
-        },
-        topics: createTopicBuilder('devcommax'),
-        maxDevices: 4,
-    }), true);
-
-    assert(discoveredTemps.has('commax_temp_04'));
-    assert(!discoveredTemps.has('commax_temp_05'));
-    assert.equal(saveCount, 1);
-    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_05/config' && call.message === ''));
-    assert(mqttClient.calls.some((call) => call.topic === 'devcommax/temp/05/availability' && call.message === 'unavailable'));
-});
-
-test('clearInvalidTemperatureDiscoveries clears retained heating discovery even when local state missed it', () => {
-    const mqttClient = createMqttStub();
-    const discoveredTemps = new Set(['commax_temp_01']);
-    let saveCount = 0;
-
-    assert.equal(clearInvalidTemperatureDiscoveries(discoveredTemps, mqttClient, {
-        saveState: () => {
-            saveCount += 1;
-        },
-        topics: createTopicBuilder('devcommax'),
-        maxDevices: 4,
-        cleanupLimit: 8,
-    }), true);
-
-    assert.equal(saveCount, 0);
-    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_05/config' && call.message === ''));
-    assert(mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_08/config' && call.message === ''));
-    assert(!mqttClient.calls.some((call) => call.topic === 'homeassistant/climate/commax_temp_04/config' && call.message === ''));
-});
-
 test('analyzeParkingAreaAndCarNumber filters car number fragments while allowing known formats', () => {
     const topics = createTopicBuilder('devcommax');
     const parkingState = {
@@ -792,6 +792,7 @@ test('analyzeAndDiscoverMetering publishes HA states from a legacy F7 frame', as
         mqttClient,
         {
             monthlyMeteringState,
+            monthlyMeteringDate: new Date('2026-04-25T00:00:00+09:00'),
             saveState: async () => {
                 saveCount += 1;
             },

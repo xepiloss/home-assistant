@@ -154,3 +154,25 @@ test('PacketFramer resyncs to a split checksum-valid query frame before a state 
         [...outletState],
     ]);
 });
+
+test('PacketFramer preserves corrupted candidates while recovering a split known frame', () => {
+    const framer = new PacketFramer();
+    const brokenPrefix = Buffer.from([0xFF, 0x93, 0x02, 0x20, 0x00, 0x00, 0x00, 0x1C]);
+    const queryFrame = Buffer.from([0x20, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x22]);
+
+    const firstResult = framer.push(brokenPrefix);
+    const secondResult = framer.push(queryFrame);
+
+    assert.equal(formatBytes(firstResult.dropped[0]), 'FF 93');
+    assert.equal(firstResult.droppedDetails[0].reason, 'unknown_header_before_known_header');
+    assert.deepEqual(firstResult.recovered, undefined);
+    assert.equal(formatBytes(secondResult.dropped[0]), '02 20 00 00 00 1C');
+    assert.equal(secondResult.droppedDetails[0].reason, 'checksum_mismatch_before_recovered_frame');
+    assert.equal(secondResult.droppedDetails[0].recovered_frame_hex, '20 01 01 00 00 00 00 22');
+    assert.deepEqual(secondResult.frames, [[...queryFrame]]);
+    assert.deepEqual(secondResult.recovered, [[...queryFrame]]);
+    assert.equal(secondResult.recoveredDetails[0].is_state_frame, false);
+    assert.equal(secondResult.corrupted[0].reason, 'checksum_mismatch_before_resync');
+    assert.deepEqual(secondResult.corrupted[0].bytes, [0x02, 0x20, 0x00, 0x00, 0x00, 0x1C, 0x20, 0x01]);
+    assert.equal(secondResult.corrupted[0].recovery_status, 'recovered');
+});

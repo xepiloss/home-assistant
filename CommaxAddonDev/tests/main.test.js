@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createPacketIntervalMonitor } = require('../src/packetIntervalMonitor');
+const { createPacketIntervalMonitor, getPacketTimingKey } = require('../src/packetIntervalMonitor');
 
 function withMockedNow(timestamp, callback) {
     const originalNow = Date.now;
@@ -41,13 +41,36 @@ test('createPacketIntervalMonitor learns next-gap timing per packet signature', 
     withMockedNow(360, () => monitor.recordPacket(packetB));
     withMockedNow(400, () => monitor.recordPacket(packetA));
 
-    assert.equal(monitor.getEstimatedNextGap('30 04 00 00'), 60);
+    assert.equal(monitor.getEstimatedNextGap('30 04 00'), 60);
     withMockedNow(405, () => {
         assert.equal(monitor.getSafeFlushDelay(), 0);
     });
     withMockedNow(445, () => {
         assert.equal(monitor.getSafeFlushDelay(), 37);
     });
+});
+
+test('createPacketIntervalMonitor normalizes periodic packets and skips ACK/state frames', () => {
+    const { monitor } = createMonitorHarness();
+    const queryA = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
+    const queryB = [0x30, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x38];
+    const lightAck = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
+
+    assert.equal(getPacketTimingKey(queryA), '30 07 00');
+    assert.equal(getPacketTimingKey(queryB), '30 07 01');
+    assert.equal(getPacketTimingKey(lightAck), '');
+
+    withMockedNow(0, () => monitor.recordPacket(queryA));
+    withMockedNow(20, () => monitor.recordPacket(lightAck));
+    withMockedNow(60, () => monitor.recordPacket(queryA));
+    withMockedNow(80, () => monitor.recordPacket(lightAck));
+    withMockedNow(120, () => monitor.recordPacket(queryA));
+    withMockedNow(140, () => monitor.recordPacket(lightAck));
+    withMockedNow(180, () => monitor.recordPacket(queryA));
+    withMockedNow(200, () => monitor.recordPacket(lightAck));
+    withMockedNow(240, () => monitor.recordPacket(queryA));
+
+    assert.equal(monitor.getEstimatedNextGap('30 07 00'), 60);
 });
 
 test('createPacketIntervalMonitor delays queue flush when current packet gap is almost exhausted', () => {

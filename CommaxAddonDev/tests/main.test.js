@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createPacketIntervalMonitor, getPacketTimingKey } = require('../src/packetIntervalMonitor');
+const { createPacketIntervalMonitor, getQueryTimingKey, getResponseTimingKey } = require('../src/packetIntervalMonitor');
 
 function withMockedNow(timestamp, callback) {
     const originalNow = Date.now;
@@ -26,39 +26,38 @@ function createMonitorHarness() {
     return { monitor, writes, socket };
 }
 
-test('createPacketIntervalMonitor learns next-gap timing per packet signature', () => {
+test('createPacketIntervalMonitor learns response-to-next-query timing', () => {
     const { monitor } = createMonitorHarness();
-    const packetA = [0x30, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34];
-    const packetB = [0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B];
+    const query = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
+    const response = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
 
-    withMockedNow(0, () => monitor.recordPacket(packetA));
-    withMockedNow(60, () => monitor.recordPacket(packetB));
-    withMockedNow(100, () => monitor.recordPacket(packetA));
-    withMockedNow(160, () => monitor.recordPacket(packetB));
-    withMockedNow(200, () => monitor.recordPacket(packetA));
-    withMockedNow(260, () => monitor.recordPacket(packetB));
-    withMockedNow(300, () => monitor.recordPacket(packetA));
-    withMockedNow(360, () => monitor.recordPacket(packetB));
-    withMockedNow(400, () => monitor.recordPacket(packetA));
+    withMockedNow(0, () => monitor.recordPacket(query));
+    withMockedNow(20, () => monitor.recordPacket(response));
+    withMockedNow(100, () => monitor.recordPacket(query));
+    withMockedNow(120, () => monitor.recordPacket(response));
+    withMockedNow(200, () => monitor.recordPacket(query));
+    withMockedNow(220, () => monitor.recordPacket(response));
+    withMockedNow(300, () => monitor.recordPacket(query));
+    withMockedNow(320, () => monitor.recordPacket(response));
+    withMockedNow(400, () => monitor.recordPacket(query));
 
-    assert.equal(monitor.getEstimatedNextGap('30 04 00'), 60);
-    withMockedNow(405, () => {
+    assert.equal(monitor.getEstimatedNextGap('light:07'), 80);
+    withMockedNow(420, () => monitor.recordPacket(response));
+    withMockedNow(440, () => {
         assert.equal(monitor.getSafeFlushDelay(), 0);
     });
-    withMockedNow(445, () => {
+    withMockedNow(485, () => {
         assert.equal(monitor.getSafeFlushDelay(), 37);
     });
 });
 
-test('createPacketIntervalMonitor normalizes periodic packets and skips ACK/state frames', () => {
+test('createPacketIntervalMonitor normalizes queries and responses', () => {
     const { monitor } = createMonitorHarness();
     const queryA = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
-    const queryB = [0x30, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x38];
     const lightAck = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
 
-    assert.equal(getPacketTimingKey(queryA), '30 07 00');
-    assert.equal(getPacketTimingKey(queryB), '30 07 01');
-    assert.equal(getPacketTimingKey(lightAck), '');
+    assert.equal(getQueryTimingKey(queryA), 'light:07');
+    assert.equal(getResponseTimingKey(lightAck), 'light:07');
 
     withMockedNow(0, () => monitor.recordPacket(queryA));
     withMockedNow(20, () => monitor.recordPacket(lightAck));
@@ -70,10 +69,29 @@ test('createPacketIntervalMonitor normalizes periodic packets and skips ACK/stat
     withMockedNow(200, () => monitor.recordPacket(lightAck));
     withMockedNow(240, () => monitor.recordPacket(queryA));
 
-    assert.equal(monitor.getEstimatedNextGap('30 07 00'), 60);
+    assert.equal(monitor.getEstimatedNextGap('light:07'), 40);
 });
 
-test('createPacketIntervalMonitor delays queue flush when current packet gap is almost exhausted', () => {
+test('createPacketIntervalMonitor blocks command flush between query and response', () => {
+    const { monitor, writes } = createMonitorHarness();
+    const query = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
+    const response = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
+
+    withMockedNow(0, () => monitor.recordPacket(query));
+    withMockedNow(20, () => {
+        assert.equal(monitor.getSafeFlushDelay(), 60);
+    });
+    assert.equal(writes.length, 0);
+
+    withMockedNow(30, () => monitor.recordPacket(response));
+    withMockedNow(31, () => {
+        assert.equal(monitor.getSafeFlushDelay(), 0);
+        monitor.flushQueue();
+    });
+    assert.equal(writes.length, 1);
+});
+
+test('createPacketIntervalMonitor delays queue flush when response-to-query gap is almost exhausted', () => {
     const originalSetTimeout = global.setTimeout;
     const originalClearTimeout = global.clearTimeout;
     let scheduledDelay = null;
@@ -88,20 +106,21 @@ test('createPacketIntervalMonitor delays queue flush when current packet gap is 
 
     try {
         const { monitor, writes, socket } = createMonitorHarness();
-        const packetA = [0x30, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34];
-        const packetB = [0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B];
+        const query = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
+        const response = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
 
-        withMockedNow(0, () => monitor.recordPacket(packetA));
-        withMockedNow(60, () => monitor.recordPacket(packetB));
-        withMockedNow(100, () => monitor.recordPacket(packetA));
-        withMockedNow(160, () => monitor.recordPacket(packetB));
-        withMockedNow(200, () => monitor.recordPacket(packetA));
-        withMockedNow(260, () => monitor.recordPacket(packetB));
-        withMockedNow(300, () => monitor.recordPacket(packetA));
-        withMockedNow(360, () => monitor.recordPacket(packetB));
-        withMockedNow(400, () => monitor.recordPacket(packetA));
+        withMockedNow(0, () => monitor.recordPacket(query));
+        withMockedNow(20, () => monitor.recordPacket(response));
+        withMockedNow(100, () => monitor.recordPacket(query));
+        withMockedNow(120, () => monitor.recordPacket(response));
+        withMockedNow(200, () => monitor.recordPacket(query));
+        withMockedNow(220, () => monitor.recordPacket(response));
+        withMockedNow(300, () => monitor.recordPacket(query));
+        withMockedNow(320, () => monitor.recordPacket(response));
+        withMockedNow(400, () => monitor.recordPacket(query));
+        withMockedNow(420, () => monitor.recordPacket(response));
 
-        withMockedNow(445, () => monitor.flushQueue());
+        withMockedNow(485, () => monitor.flushQueue());
         assert.equal(writes.length, 0);
         assert.equal(scheduledDelay, 37);
 

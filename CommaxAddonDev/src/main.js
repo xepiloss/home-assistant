@@ -312,10 +312,7 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
             elevator: elevatorConfig,
         })) {
             commandHandler.handleAckOrState(bytes);
-            const socket = getSocket();
-            if (socket) {
-                commandHandler.dequeueAndWrite(socket);
-            }
+            packetMonitor.flushQueue();
             return;
         }
 
@@ -421,10 +418,7 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 break;
         }
 
-        const socket = getSocket();
-        if (socket) {
-            commandHandler.dequeueAndWrite(socket);
-        }
+        packetMonitor.flushQueue();
     };
 }
 

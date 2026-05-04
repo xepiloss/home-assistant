@@ -8,36 +8,11 @@ const PACKET_TIMING_MIN_SAMPLES = 4;
 const COMMAND_TX_BUDGET_MS = 14;
 const COMMAND_TX_GUARD_MS = 8;
 const COMMAND_SAFE_FLUSH_FALLBACK_MS = 120;
+const QUERY_RESPONSE_TIMEOUT_MS = 80;
 const PACKET_TIMING_CYCLE_MIN_KEYS = 4;
 const PACKET_TIMING_LOG_LIMIT = 24;
-const PACKET_TIMING_CYCLE_ANCHOR_PREFIX = '30 01 ';
-
-const PERIODIC_PACKET_HEADERS = new Set([
-    0x02, // thermostat query
-    0x0F, // auxiliary query observed near living-information traffic
-    0x10, // gas query/auxiliary
-    0x20, // master light query
-    0x24, // living-information current weather / outdoor dust
-    0x25, // living-information forecast
-    0x30, // light query
-    0x47, // unchanged periodic frame
-    0x48, // unchanged periodic frame
-    0x76, // ventilation query
-    0x77, // ventilation auxiliary/query
-    0x79, // outlet query
-    0x8F, // unknown repeating heartbeat candidate
-    0xF7, // unchanged periodic frame / metering auxiliary
-]);
-
-const ACK_OR_COMMAND_RESPONSE_HEADERS = new Set([
-    0x82, 0x84, // thermostat state/ACK
-    0x90, 0x91, // gas state/ACK
-    0xA0, 0xA2, // master light / elevator state/ACK
-    0xA4, // living-information ACK
-    0xB0, 0xB1, // light state/ACK
-    0xF6, 0xF8, // ventilation state/ACK
-    0xF9, 0xFA, // outlet state/ACK
-]);
+const PACKET_TIMING_CYCLE_ANCHOR_KEY = 'light:01';
+const LIFE_INFO_RESPONSE_KEY = 'life_info';
 
 function byteToHex(byte) {
     return byte.toString(16).padStart(2, '0').toUpperCase();
@@ -53,28 +28,70 @@ function hasValidChecksum(bytes) {
         && calculateChecksum(bytes.slice(0, 7)) === bytes[7];
 }
 
-function getPacketTimingKey(bytes = []) {
+function getQueryTimingKey(bytes = []) {
     if (!Array.isArray(bytes) || bytes.length < 8 || !hasValidChecksum(bytes)) {
         return '';
     }
 
-    const header = bytes[0];
-    if (ACK_OR_COMMAND_RESPONSE_HEADERS.has(header) || !PERIODIC_PACKET_HEADERS.has(header)) {
+    switch (bytes[0]) {
+        case 0x02:
+            return `heating:${byteToHex(bytes[1])}`;
+        case 0x10:
+            return `gas:${byteToHex(bytes[1])}`;
+        case 0x20:
+            return `master_light:${byteToHex(bytes[2])}`;
+        case 0x24:
+        case 0x25:
+            return LIFE_INFO_RESPONSE_KEY;
+        case 0x30:
+            return `light:${byteToHex(bytes[1])}`;
+        case 0x76:
+        case 0x77:
+            return `fan:${byteToHex(bytes[1])}`;
+        case 0x79:
+            return `outlet:${byteToHex(bytes[2])}`;
+        default:
+            return '';
+    }
+}
+
+function getResponseTimingKey(bytes = []) {
+    if (!Array.isArray(bytes) || bytes.length < 8 || !hasValidChecksum(bytes)) {
         return '';
     }
 
-    if (header === 0x8F) {
-        return '8F';
+    switch (bytes[0]) {
+        case 0x82:
+        case 0x84:
+            return `heating:${byteToHex(bytes[2])}`;
+        case 0x90:
+        case 0x91:
+            return `gas:${byteToHex(bytes[2])}`;
+        case 0xA0:
+        case 0xA2:
+            return `master_light:${byteToHex(bytes[2])}`;
+        case 0xA4:
+            return LIFE_INFO_RESPONSE_KEY;
+        case 0xB0:
+        case 0xB1:
+            return `light:${byteToHex(bytes[2])}`;
+        case 0xF6:
+        case 0xF8:
+            return `fan:${byteToHex(bytes[2])}`;
+        case 0xF9:
+        case 0xFA:
+            return `outlet:${byteToHex(bytes[2])}`;
+        default:
+            return '';
     }
-
-    return [header, bytes[1], bytes[2]].map(byteToHex).join(' ');
 }
 
 function createPacketIntervalMonitor(commandHandler, getSocket) {
     let lastReceiveTime = null;
-    let currentPacketKey = '';
-    let lastTimingReceiveTime = null;
-    let lastTimingPacketKey = '';
+    let currentResponseKey = '';
+    let lastResponseReceiveTime = null;
+    let lastResponseKey = '';
+    let pendingQuery = null;
     let windowStartTime = null;
     let hasChecked = false;
     let intervalTimer = null;
@@ -120,33 +137,25 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
     }
 
     function describeTimingPacket(packetKey) {
-        const parts = packetKey.split(' ');
-        const header = parts[0];
-        const deviceId = parts[1];
-        const subtype = parts[2];
+        const [deviceType, deviceId] = packetKey.split(':');
 
-        switch (header) {
-            case '02':
-                return `난방 query ${deviceId || ''}`.trim();
-            case '10':
-                return `가스 query ${deviceId || ''}`.trim();
-            case '20':
-                return `일괄소등 query ${deviceId || ''}`.trim();
-            case '24':
-                return `생활정보 현재값 ${deviceId || ''} ${subtype || ''}`.trim();
-            case '25':
-                return `생활정보 예보 ${deviceId || ''} ${subtype || ''}`.trim();
-            case '30':
-                return `조명 query ${deviceId || ''} ${subtype || ''}`.trim();
-            case '76':
-            case '77':
-                return `환기 query ${deviceId || ''} ${subtype || ''}`.trim();
-            case '79':
-                return `대기전력 query ${deviceId || ''} ${subtype || ''}`.trim();
-            case '8F':
-                return 'unknown heartbeat';
+        switch (deviceType) {
+            case 'heating':
+                return `난방 응답 ${deviceId || ''}`.trim();
+            case 'gas':
+                return `가스 응답 ${deviceId || ''}`.trim();
+            case 'master_light':
+                return `일괄소등 응답 ${deviceId || ''}`.trim();
+            case 'life_info':
+                return '생활정보 ACK';
+            case 'light':
+                return `조명 응답 ${deviceId || ''}`.trim();
+            case 'fan':
+                return `환기 응답 ${deviceId || ''}`.trim();
+            case 'outlet':
+                return `대기전력 응답 ${deviceId || ''}`.trim();
             default:
-                return `주기 프레임 ${packetKey}`;
+                return `응답 프레임 ${packetKey}`;
         }
     }
 
@@ -178,7 +187,7 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
     }
 
     function isCycleAnchorPacket(packetKey) {
-        return packetKey.startsWith(PACKET_TIMING_CYCLE_ANCHOR_PREFIX);
+        return packetKey === PACKET_TIMING_CYCLE_ANCHOR_KEY;
     }
 
     function recordTimingCycle(packetKey) {
@@ -212,16 +221,24 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
     }
 
     function getSafeFlushDelay(now = Date.now()) {
-        if (!lastTimingReceiveTime || !currentPacketKey) {
+        if (pendingQuery) {
+            const elapsedSinceQuery = now - pendingQuery.receivedAt;
+            if (elapsedSinceQuery < QUERY_RESPONSE_TIMEOUT_MS) {
+                return QUERY_RESPONSE_TIMEOUT_MS - elapsedSinceQuery;
+            }
+            pendingQuery = null;
+        }
+
+        if (!lastResponseReceiveTime || !currentResponseKey) {
             return 0;
         }
 
-        const estimatedGap = getEstimatedNextGap(currentPacketKey);
+        const estimatedGap = getEstimatedNextGap(currentResponseKey);
         if (!estimatedGap) {
             return 0;
         }
 
-        const elapsed = now - lastTimingReceiveTime;
+        const elapsed = now - lastResponseReceiveTime;
         const requiredBudget = COMMAND_TX_BUDGET_MS + COMMAND_TX_GUARD_MS;
 
         if (elapsed + requiredBudget <= estimatedGap) {
@@ -245,7 +262,8 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
 
     function recordPacket(bytes) {
         const currentTime = Date.now();
-        const packetKey = getPacketTimingKey(bytes);
+        const queryKey = getQueryTimingKey(bytes);
+        const responseKey = getResponseTimingKey(bytes);
 
         if (!hasChecked && windowStartTime === null) {
             windowStartTime = currentTime;
@@ -256,16 +274,25 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
             intervals.push(currentTime - lastReceiveTime);
         }
 
-        if (packetKey && lastTimingReceiveTime !== null) {
-            recordPacketGap(lastTimingPacketKey, currentTime - lastTimingReceiveTime);
+        if (queryKey) {
+            if (lastResponseReceiveTime !== null) {
+                recordPacketGap(lastResponseKey, currentTime - lastResponseReceiveTime);
+            }
+            pendingQuery = {
+                key: queryKey,
+                receivedAt: currentTime,
+            };
+            recordTimingCycle(queryKey);
         }
 
         lastReceiveTime = currentTime;
-        if (packetKey) {
-            lastTimingReceiveTime = currentTime;
-            lastTimingPacketKey = packetKey;
-            currentPacketKey = packetKey;
-            recordTimingCycle(packetKey);
+        if (responseKey) {
+            if (!pendingQuery || pendingQuery.key === responseKey) {
+                pendingQuery = null;
+            }
+            lastResponseReceiveTime = currentTime;
+            lastResponseKey = responseKey;
+            currentResponseKey = responseKey;
         }
 
         if (hasChecked || currentTime - windowStartTime < INTERVAL_WINDOW_MS) {
@@ -315,5 +342,6 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
 
 module.exports = {
     createPacketIntervalMonitor,
-    getPacketTimingKey,
+    getQueryTimingKey,
+    getResponseTimingKey,
 };

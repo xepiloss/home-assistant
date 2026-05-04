@@ -1,6 +1,6 @@
 name: "Commax Wallpad Dev"
 description: "코맥스 애드온 TCP Socket Ver (Dev)"
-version: "1.1.44-dev"
+version: "1.1.45-dev"
 slug: "commax_wallpad_dev"
 url: "https://github.com/xepiloss/home-assistant"
 stage: experimental

@@ -26,7 +26,7 @@ function createMonitorHarness() {
     return { monitor, writes, socket };
 }
 
-test('createPacketIntervalMonitor learns response-to-next-query timing', () => {
+test('createPacketIntervalMonitor does not add learned delay after a response', () => {
     const { monitor } = createMonitorHarness();
     const query = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
     const response = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
@@ -41,13 +41,13 @@ test('createPacketIntervalMonitor learns response-to-next-query timing', () => {
     withMockedNow(320, () => monitor.recordPacket(response));
     withMockedNow(400, () => monitor.recordPacket(query));
 
-    assert.equal(monitor.getEstimatedNextGap('light:07'), 80);
+    assert.equal(monitor.getEstimatedNextGap('light:07'), null);
     withMockedNow(420, () => monitor.recordPacket(response));
     withMockedNow(440, () => {
         assert.equal(monitor.getSafeFlushDelay(), 0);
     });
     withMockedNow(485, () => {
-        assert.equal(monitor.getSafeFlushDelay(), 37);
+        assert.equal(monitor.getSafeFlushDelay(), 0);
     });
 });
 
@@ -85,7 +85,7 @@ test('createPacketIntervalMonitor normalizes queries and responses', () => {
     withMockedNow(200, () => monitor.recordPacket(lightAck));
     withMockedNow(240, () => monitor.recordPacket(queryA));
 
-    assert.equal(monitor.getEstimatedNextGap('light:07'), 40);
+    assert.equal(monitor.getEstimatedNextGap('light:07'), null);
 });
 
 test('createPacketIntervalMonitor blocks command flush between query and response', () => {
@@ -107,43 +107,22 @@ test('createPacketIntervalMonitor blocks command flush between query and respons
     assert.equal(writes.length, 1);
 });
 
-test('createPacketIntervalMonitor delays queue flush when response-to-query gap is almost exhausted', () => {
-    const originalSetTimeout = global.setTimeout;
-    const originalClearTimeout = global.clearTimeout;
-    let scheduledDelay = null;
-    let scheduledCallback = null;
+test('createPacketIntervalMonitor flushes immediately after the matching response', () => {
+    const { monitor, writes, socket } = createMonitorHarness();
+    const query = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
+    const response = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
 
-    global.setTimeout = (callback, delay) => {
-        scheduledCallback = callback;
-        scheduledDelay = delay;
-        return { timer: true };
-    };
-    global.clearTimeout = () => {};
+    withMockedNow(0, () => monitor.recordPacket(query));
+    withMockedNow(20, () => monitor.recordPacket(response));
+    withMockedNow(100, () => monitor.recordPacket(query));
+    withMockedNow(120, () => monitor.recordPacket(response));
+    withMockedNow(200, () => monitor.recordPacket(query));
+    withMockedNow(220, () => monitor.recordPacket(response));
+    withMockedNow(300, () => monitor.recordPacket(query));
+    withMockedNow(320, () => monitor.recordPacket(response));
+    withMockedNow(400, () => monitor.recordPacket(query));
+    withMockedNow(420, () => monitor.recordPacket(response));
 
-    try {
-        const { monitor, writes, socket } = createMonitorHarness();
-        const query = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
-        const response = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
-
-        withMockedNow(0, () => monitor.recordPacket(query));
-        withMockedNow(20, () => monitor.recordPacket(response));
-        withMockedNow(100, () => monitor.recordPacket(query));
-        withMockedNow(120, () => monitor.recordPacket(response));
-        withMockedNow(200, () => monitor.recordPacket(query));
-        withMockedNow(220, () => monitor.recordPacket(response));
-        withMockedNow(300, () => monitor.recordPacket(query));
-        withMockedNow(320, () => monitor.recordPacket(response));
-        withMockedNow(400, () => monitor.recordPacket(query));
-        withMockedNow(420, () => monitor.recordPacket(response));
-
-        withMockedNow(485, () => monitor.flushQueue());
-        assert.equal(writes.length, 0);
-        assert.equal(scheduledDelay, 37);
-
-        scheduledCallback();
-        assert.deepEqual(writes, [socket]);
-    } finally {
-        global.setTimeout = originalSetTimeout;
-        global.clearTimeout = originalClearTimeout;
-    }
+    withMockedNow(485, () => monitor.flushQueue());
+    assert.deepEqual(writes, [socket]);
 });

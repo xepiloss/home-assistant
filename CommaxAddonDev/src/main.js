@@ -304,7 +304,7 @@ function logHeatingConfig(heatingConfig) {
 
 function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler, saveCurrentState, packetMonitor, packetCapture, getSocket, elevatorConfig, heatingConfig }) {
     return (bytes) => {
-        packetMonitor.recordPacket(bytes);
+        packetMonitor.recordPacket();
 
         if (analyzeAndDiscoverElevator(bytes, state.discoveredElevators, mqttClient, {
             saveState: saveCurrentState,
@@ -312,7 +312,10 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
             elevator: elevatorConfig,
         })) {
             commandHandler.handleAckOrState(bytes);
-            packetMonitor.flushQueue();
+            const socket = getSocket();
+            if (socket) {
+                commandHandler.dequeueAndWrite(socket);
+            }
             return;
         }
 
@@ -418,7 +421,10 @@ function createPrimaryPacketHandler({ state, mqttClient, topics, commandHandler,
                 break;
         }
 
-        packetMonitor.flushQueue();
+        const socket = getSocket();
+        if (socket) {
+            commandHandler.dequeueAndWrite(socket);
+        }
     };
 }
 

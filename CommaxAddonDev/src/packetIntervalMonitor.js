@@ -13,6 +13,8 @@ const PACKET_TIMING_CYCLE_MIN_KEYS = 4;
 const PACKET_TIMING_LOG_LIMIT = 24;
 const PACKET_TIMING_CYCLE_ANCHOR_KEY = 'light:01';
 const LIFE_INFO_RESPONSE_KEY = 'life_info';
+const AUX_STATUS_RESPONSE_KEY = 'aux_status';
+const AIR_QUALITY_RESPONSE_KEY = 'air_quality';
 
 function byteToHex(byte) {
     return byte.toString(16).padStart(2, '0').toUpperCase();
@@ -36,6 +38,8 @@ function getQueryTimingKey(bytes = []) {
     switch (bytes[0]) {
         case 0x02:
             return `heating:${byteToHex(bytes[1])}`;
+        case 0x0F:
+            return AUX_STATUS_RESPONSE_KEY;
         case 0x10:
             return `gas:${byteToHex(bytes[1])}`;
         case 0x20:
@@ -45,6 +49,8 @@ function getQueryTimingKey(bytes = []) {
             return LIFE_INFO_RESPONSE_KEY;
         case 0x30:
             return `light:${byteToHex(bytes[1])}`;
+        case 0x48:
+            return AIR_QUALITY_RESPONSE_KEY;
         case 0x76:
         case 0x77:
             return `fan:${byteToHex(bytes[1])}`;
@@ -64,6 +70,8 @@ function getResponseTimingKey(bytes = []) {
         case 0x82:
         case 0x84:
             return `heating:${byteToHex(bytes[2])}`;
+        case 0x8F:
+            return AUX_STATUS_RESPONSE_KEY;
         case 0x90:
         case 0x91:
             return `gas:${byteToHex(bytes[2])}`;
@@ -75,7 +83,10 @@ function getResponseTimingKey(bytes = []) {
         case 0xB0:
         case 0xB1:
             return `light:${byteToHex(bytes[2])}`;
+        case 0xC8:
+            return AIR_QUALITY_RESPONSE_KEY;
         case 0xF6:
+        case 0xF7:
         case 0xF8:
             return `fan:${byteToHex(bytes[2])}`;
         case 0xF9:
@@ -142,6 +153,8 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
         switch (deviceType) {
             case 'heating':
                 return `난방 응답 ${deviceId || ''}`.trim();
+            case 'aux_status':
+                return '보조 상태 응답';
             case 'gas':
                 return `가스 응답 ${deviceId || ''}`.trim();
             case 'master_light':
@@ -150,6 +163,8 @@ function createPacketIntervalMonitor(commandHandler, getSocket) {
                 return '생활정보 ACK';
             case 'light':
                 return `조명 응답 ${deviceId || ''}`.trim();
+            case 'air_quality':
+                return '공기질 응답';
             case 'fan':
                 return `환기 응답 ${deviceId || ''}`.trim();
             case 'outlet':

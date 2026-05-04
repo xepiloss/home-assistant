@@ -55,9 +55,25 @@ test('createPacketIntervalMonitor normalizes queries and responses', () => {
     const { monitor } = createMonitorHarness();
     const queryA = [0x30, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x37];
     const lightAck = [0xB1, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0xB9];
+    const auxQuery = [0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F];
+    const auxResponse = [0x8F, 0x0A, 0x03, 0x05, 0x40, 0x04, 0x46, 0x2B];
+    const airQualityQueryA = [0x48, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x49];
+    const airQualityQueryB = [0x48, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x4A];
+    const airQualityResponseA = [0xC8, 0x21, 0x01, 0x07, 0x14, 0x00, 0x03, 0x08];
+    const airQualityResponseB = [0xC8, 0x29, 0x01, 0x07, 0x14, 0x00, 0x00, 0x0D];
+    const fanQuery = [0x77, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78];
+    const fanResponse = [0xF7, 0x20, 0x01, 0x00, 0x00, 0x00, 0x00, 0x18];
 
     assert.equal(getQueryTimingKey(queryA), 'light:07');
     assert.equal(getResponseTimingKey(lightAck), 'light:07');
+    assert.equal(getQueryTimingKey(auxQuery), 'aux_status');
+    assert.equal(getResponseTimingKey(auxResponse), 'aux_status');
+    assert.equal(getQueryTimingKey(airQualityQueryA), 'air_quality');
+    assert.equal(getQueryTimingKey(airQualityQueryB), 'air_quality');
+    assert.equal(getResponseTimingKey(airQualityResponseA), 'air_quality');
+    assert.equal(getResponseTimingKey(airQualityResponseB), 'air_quality');
+    assert.equal(getQueryTimingKey(fanQuery), 'fan:01');
+    assert.equal(getResponseTimingKey(fanResponse), 'fan:01');
 
     withMockedNow(0, () => monitor.recordPacket(queryA));
     withMockedNow(20, () => monitor.recordPacket(lightAck));
